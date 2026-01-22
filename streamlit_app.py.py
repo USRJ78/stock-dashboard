@@ -1,31 +1,33 @@
-# Streamlit Stock Analysis & Portfolio Dashboard
+# Streamlit Stock Analysis & Portfolio Dashboard (API VERSION)
 # Run with: streamlit run streamlit_app.py
 
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import requests
 from datetime import date
 
-# ---------------- Page Config ----------------
+# ================= CONFIG =================
+ALPHA_VANTAGE_API_KEY = "YVPHMGAAFPB3JZHN"
+
 st.set_page_config(
     page_title="Stock Analysis & Portfolio Dashboard",
     layout="wide"
 )
 
-st.title("📈 Stock Analysis & Portfolio Dashboard")
+st.title("📈 Stock Analysis & Portfolio Dashboard (API Powered)")
 st.markdown(
-    "Analyze stocks, compare returns, visualize correlations, and build an optimal portfolio."
+    "Stable cloud-based stock analysis using Alpha Vantage API."
 )
 
-# ---------------- Sidebar Inputs ----------------
+# ================= SIDEBAR =================
 st.sidebar.header("Inputs")
 
 tickers = st.sidebar.text_input(
     "Enter stock tickers (comma separated)",
-    "AAPL,MSFT,RELIANCE.NS"
+    "AAPL,MSFT,RELIANCE.BSE"
 )
 
 start_date = st.sidebar.date_input("Start Date", date(2021, 1, 1))
@@ -33,37 +35,43 @@ end_date = st.sidebar.date_input("End Date", date.today())
 
 run = st.sidebar.button("Run Analysis")
 
-# ---------------- Data Loader (SAFE) ----------------
+# ================= DATA FETCH =================
 @st.cache_data(ttl=3600)
+def fetch_alpha_vantage(symbol):
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "TIME_SERIES_DAILY_ADJUSTED",
+        "symbol": symbol,
+        "outputsize": "full",
+        "apikey": ALPHA_VANTAGE_API_KEY
+    }
+    r = requests.get(url, timeout=10)
+    data = r.json()
+
+    if "Time Series (Daily)" not in data:
+        return pd.Series(dtype=float)
+
+    df = pd.DataFrame.from_dict(
+        data["Time Series (Daily)"], orient="index"
+    ).astype(float)
+
+    df.index = pd.to_datetime(df.index)
+    return df["5. adjusted close"].sort_index()
+
 def load_data(tickers, start, end):
-    try:
-        data = yf.download(
-            tickers,
-            start=start,
-            end=end,
-            auto_adjust=True,
-            progress=False,
-            threads=False
-        )
-    except Exception:
+    prices = {}
+
+    for t in tickers:
+        series = fetch_alpha_vantage(t)
+        if not series.empty:
+            prices[t] = series.loc[start:end]
+
+    if not prices:
         return pd.DataFrame()
 
-    if data.empty:
-        return pd.DataFrame()
+    return pd.DataFrame(prices).dropna()
 
-    # Handle MultiIndex (multiple tickers)
-    if isinstance(data.columns, pd.MultiIndex):
-        close_prices = {}
-        for t in tickers:
-            if (t, "Close") in data.columns:
-                close_prices[t] = data[(t, "Close")]
-        data = pd.DataFrame(close_prices)
-    else:
-        data = data[["Close"]]
-
-    return data.dropna()
-
-# ---------------- Main Logic ----------------
+# ================= MAIN =================
 if run:
     tickers_list = [t.strip().upper() for t in tickers.split(",")]
 
@@ -73,112 +81,81 @@ if run:
         st.error(
             "❌ No data fetched.\n\n"
             "Possible reasons:\n"
-            "- Yahoo Finance rate-limited the request\n"
+            "- API rate limit hit (5 calls/min)\n"
             "- Invalid ticker\n"
-            "- Network issue\n\n"
-            "👉 Try again after some time or reduce tickers."
+            "- API key missing/invalid"
         )
         st.stop()
 
     returns = prices.pct_change().dropna()
 
-    # ---------- Percentage Change Plot ----------
+    # ---------- % Change ----------
     st.subheader("📊 Percentage Change Comparison")
-
-    base = prices.iloc[0]
-    pct_change = (prices.divide(base) - 1) * 100
+    pct_change = (prices.divide(prices.iloc[0]) - 1) * 100
 
     fig, ax = plt.subplots()
     pct_change.plot(ax=ax)
     ax.set_ylabel("% Change")
-    ax.set_xlabel("Date")
     st.pyplot(fig)
     plt.clf()
 
-    # ---------- Returns Histogram ----------
+    # ---------- Histogram ----------
     st.subheader("📈 Returns Histogram")
-
-    fig, ax = plt.subplots()
-    returns.plot(kind="hist", bins=40, alpha=0.7, ax=ax)
-    ax.set_xlabel("Daily Returns")
-    st.pyplot(fig)
+    returns.plot(kind="hist", bins=40, alpha=0.7)
+    st.pyplot(plt.gcf())
     plt.clf()
 
-    # ---------- Correlation Heatmap ----------
+    # ---------- Correlation ----------
     st.subheader("🔥 Correlation Heatmap")
-
     sns.set_theme()
-    corr = returns.corr()
-
     fig, ax = plt.subplots()
-    sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
+    sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax)
     st.pyplot(fig)
     plt.clf()
 
     # ---------- Portfolio Optimization ----------
-    st.subheader("🧮 Portfolio Optimization (Mean-Variance)")
-
-    num_assets = len(tickers_list)
-    num_portfolios = 5000
+    st.subheader("🧮 Portfolio Optimization")
 
     mean_returns = returns.mean() * 252
     cov_matrix = returns.cov() * 252
 
+    num_portfolios = 5000
     results = np.zeros((3, num_portfolios))
     weights_record = []
 
     for i in range(num_portfolios):
-        weights = np.random.random(num_assets)
+        weights = np.random.random(len(tickers_list))
         weights /= np.sum(weights)
         weights_record.append(weights)
 
-        portfolio_return = np.dot(weights, mean_returns)
-        portfolio_std = np.sqrt(
-            np.dot(weights.T, np.dot(cov_matrix, weights))
-        )
+        ret = np.dot(weights, mean_returns)
+        vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
 
-        results[0, i] = portfolio_return
-        results[1, i] = portfolio_std
-        results[2, i] = portfolio_return / portfolio_std
+        results[0, i] = ret
+        results[1, i] = vol
+        results[2, i] = ret / vol
 
-    max_sharpe_idx = np.argmax(results[2])
-    optimal_weights = weights_record[max_sharpe_idx]
+    idx = np.argmax(results[2])
+    opt_weights = weights_record[idx]
 
     st.markdown("### ✅ Optimal Portfolio Weights")
-
-    opt_df = pd.DataFrame({
-        "Ticker": tickers_list,
-        "Weight": optimal_weights
-    })
-
-    st.dataframe(opt_df)
-
-    st.markdown(
-        f"**Expected Annual Return:** {results[0, max_sharpe_idx]*100:.2f}%"
+    st.dataframe(
+        pd.DataFrame({
+            "Ticker": tickers_list,
+            "Weight": opt_weights
+        })
     )
-    st.markdown(
-        f"**Expected Volatility:** {results[1, max_sharpe_idx]*100:.2f}%"
-    )
+
+    st.markdown(f"**Expected Return:** {results[0, idx]*100:.2f}%")
+    st.markdown(f"**Volatility:** {results[1, idx]*100:.2f}%")
 
     fig, ax = plt.subplots()
-    scatter = ax.scatter(
-        results[1],
-        results[0],
-        c=results[2],
-        cmap="viridis",
-        s=5
-    )
-    ax.scatter(
-        results[1, max_sharpe_idx],
-        results[0, max_sharpe_idx],
-        color="red",
-        marker="*",
-        s=200
-    )
+    ax.scatter(results[1], results[0], c=results[2], cmap="viridis", s=5)
+    ax.scatter(results[1, idx], results[0, idx], c="red", marker="*", s=200)
     ax.set_xlabel("Volatility")
     ax.set_ylabel("Return")
     st.pyplot(fig)
     plt.clf()
 
 else:
-    st.info("👈 Enter inputs in the sidebar and click **Run Analysis**")
+    st.info("👈 Enter inputs and click **Run Analysis**")
