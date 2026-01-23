@@ -66,9 +66,24 @@ def load_prices(tickers, start, end):
 
 st.sidebar.header("Inputs")
 
-assets_input = st.sidebar.text_input(
-    "Enter stock / ETF names (comma separated)",
-    "Reliance Industries, Infosys, Nifty 50 ETF"
+# ---- HYBRID SEARCH ----
+@st.cache_data(ttl=3600)
+def load_search_options():
+    stock_map = load_nse_stock_list()
+    etfs = list(ETF_MAP.keys())
+    stocks = list(stock_map.keys())
+    return sorted(stocks + etfs)
+
+search_options = load_search_options()
+
+selected_assets = st.sidebar.multiselect(
+    "🔍 Search & select stocks / ETFs (recommended)",
+    options=search_options
+)
+
+manual_assets = st.sidebar.text_input(
+    "✍️ Or manually type names / tickers (comma separated)",
+    ""
 )
 
 initial_amount = st.sidebar.number_input("Initial Investment (INR)", value=100000, step=10000)
@@ -79,12 +94,23 @@ end_date = st.sidebar.date_input("End Date", date.today())
 run_mc = st.sidebar.checkbox("Run Monte Carlo Simulation")
 num_sims = st.sidebar.number_input("No. of simulations", 1000, 20000, 5000, step=1000)
 
-run = st.sidebar.button("Run Analysis")
+run = st.sidebar.button("Run Analysis")("Run Analysis")
 
 # ------------------ Main ------------------
 
 if run:
-    user_assets = [x.strip() for x in assets_input.split(",") if x.strip()]
+    user_assets = []
+
+    if selected_assets:
+        user_assets.extend(selected_assets)
+
+    if manual_assets.strip():
+        user_assets.extend([x.strip() for x in manual_assets.split(",") if x.strip()])
+
+    if not user_assets:
+        st.error("❌ Please select or enter at least one asset")
+        st.stop()
+
     resolved = resolve_assets(user_assets)
 
     valid = {k: v for k, v in resolved.items() if v}
@@ -170,4 +196,4 @@ if run:
         st.dataframe(best_df)
 
 else:
-    st.info("👈 Enter inputs and click Run Analysis")
+    st.info("👈 Select assets and click Run Analysis")("👈 Enter inputs and click Run Analysis")
