@@ -148,10 +148,37 @@ if run:
     st.subheader("💰 Portfolio Allocation")
     st.dataframe(alloc_df)
 
+    # -------- Percentage Change --------
+    st.subheader("📊 Percentage Change (%)")
+    pct_change = (prices / prices.iloc[0] - 1) * 100
+    fig, ax = plt.subplots()
+    pct_change.plot(ax=ax)
+    ax.set_ylabel("% Change")
+    st.pyplot(fig)
+
+    # -------- Price Levels --------
+    st.subheader("📈 Price Movement")
+    fig, ax = plt.subplots()
+    prices.plot(ax=ax)
+    ax.set_ylabel("Price")
+    st.pyplot(fig)
+
+    # -------- Correlation Heatmap --------
+    st.subheader("🔥 Correlation Heatmap")
+    corr = returns.corr()
+    fig, ax = plt.subplots()
+    im = ax.imshow(corr, cmap="coolwarm")
+    ax.set_xticks(range(len(corr.columns)))
+    ax.set_yticks(range(len(corr.columns)))
+    ax.set_xticklabels(corr.columns, rotation=45, ha="right")
+    ax.set_yticklabels(corr.columns)
+    fig.colorbar(im, ax=ax)
+    st.pyplot(fig)
+
     # -------- Portfolio Value --------
     portfolio_value = (prices / prices.iloc[0]) @ allocation
 
-    st.subheader("📈 Portfolio Value Over Time")
+    st.subheader("💼 Portfolio Value Over Time")
     fig, ax = plt.subplots()
     ax.plot(portfolio_value)
     ax.set_ylabel("Portfolio Value (INR)")
