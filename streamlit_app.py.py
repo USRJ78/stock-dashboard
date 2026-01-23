@@ -1,131 +1,173 @@
-# FULL FEATURED STREAMLIT APP
-# Universal Stock / ETF / MF Search + Indicators + Portfolio + Monte Carlo
+# (Updated code without rapidfuzz)
+# Uses difflib instead of rapidfuzz to avoid extra dependencies
 
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import requests
-from rapidfuzz import process
 import matplotlib.pyplot as plt
+import requests
+from difflib import get_close_matches
+from datetime import date
 
 st.set_page_config(page_title="Universal Market App", layout="wide")
 
-# ---------------- CACHE LOADERS ----------------
-@st.cache_data
-def load_mutual_funds():
-    data = requests.get("https://api.mfapi.in/mf").json()
-    df = pd.DataFrame(data)
-    df["type"] = "mutual_fund"
-    return df[["schemeName", "schemeCode", "type"]]
+st.title("📊 Universal Stock & ETF Portfolio App")
+st.markdown("Search by **name or ticker**, allocate capital, and run portfolio simulations.")
 
-@st.cache_data
-def load_nse_symbols():
+# ------------------ Helpers ------------------
+
+@st.cache_data(ttl=3600)
+def load_nse_stock_list():
     url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
     df = pd.read_csv(url)
-    df["symbol"] = df["SYMBOL"] + ".NS"
-    df = df.rename(columns={"NAME OF COMPANY": "name"})
-    df["type"] = "stock"
-    return df[["name", "symbol", "type"]]
+    df["SYMBOL"] = df["SYMBOL"].astype(str) + ".NS"
+    return dict(zip(df["NAME OF COMPANY"].str.upper(), df["SYMBOL"]))
 
-@st.cache_data
-def load_etfs():
-    etfs = ["NIFTYBEES.NS", "BANKBEES.NS", "GOLDBEES.NS", "SILVERBEES.NS"]
-    rows = []
-    for t in etfs:
-        info = yf.Ticker(t).info
-        rows.append({"name": info.get("longName"), "symbol": t, "type": "etf"})
-    return pd.DataFrame(rows)
+ETF_MAP = {
+    "NIFTY 50 ETF": "NIFTYBEES.NS",
+    "BANK NIFTY ETF": "BANKBEES.NS",
+    "GOLD ETF": "GOLDBEES.NS",
+    "IT ETF": "ITBEES.NS",
+}
 
-# ---------------- SEARCH RESOLVER ----------------
-def resolve_asset(query, stocks, etfs, mfs):
-    candidates = []
+@st.cache_data(ttl=3600)
+def resolve_assets(user_inputs):
+    stock_map = load_nse_stock_list()
+    resolved = {}
 
-    for df in [stocks, etfs]:
-        match = process.extractOne(query, df["name"], score_cutoff=70)
-        if match:
-            name, score, idx = match
-            row = df.iloc[idx]
-            candidates.append({"name": row["name"], "symbol": row["symbol"], "type": row["type"], "score": score})
+    for item in user_inputs:
+        key = item.upper().strip()
 
-    mf_match = process.extractOne(query, mfs["schemeName"], score_cutoff=70)
-    if mf_match:
-        name, score, idx = mf_match
-        row = mfs.iloc[idx]
-        candidates.append({"name": row["schemeName"], "symbol": row["schemeCode"], "type": "mutual_fund", "score": score})
+        if "." in key:
+            resolved[item] = key
+            continue
 
-    return max(candidates, key=lambda x: x["score"]) if candidates else None
+        if key in ETF_MAP:
+            resolved[item] = ETF_MAP[key]
+            continue
 
-# ---------------- PORTFOLIO ----------------
-def monte_carlo_simulation(returns, sims):
-    results = []
-    for _ in range(sims):
-        w = np.random.random(len(returns.columns))
-        w /= np.sum(w)
-        port_ret = np.sum(returns.mean() * w) * 252
-        port_vol = np.sqrt(np.dot(w.T, np.dot(returns.cov() * 252, w)))
-        sharpe = port_ret / port_vol
-        results.append([port_ret, port_vol, sharpe, w])
-    return results
+        matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
+        if matches:
+            resolved[item] = stock_map[matches[0]]
+        else:
+            resolved[item] = None
 
-# ---------------- UI ----------------
-st.title("📈 Universal Market Intelligence Platform")
+    return resolved
 
-assets = st.multiselect("Search & Add Assets", options=[], placeholder="Type stock / ETF / MF name")
-query = st.text_input("Add asset")
+@st.cache_data(ttl=300)
+def load_prices(tickers, start, end):
+    data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
+    if isinstance(data, pd.Series):
+        data = data.to_frame()
+    return data.dropna()
 
-if query:
-    stocks = load_nse_symbols()
-    etfs = load_etfs()
-    mfs = load_mutual_funds()
+# ------------------ Sidebar ------------------
 
-    result = resolve_asset(query, stocks, etfs, mfs)
-    if result:
-        st.success(f"Added {result['name']}")
-        st.session_state.setdefault("assets", []).append(result)
+st.sidebar.header("Inputs")
 
-# ---------------- PORTFOLIO INPUTS ----------------
-initial_amount = st.number_input("Initial Investment (INR)", value=100000)
-start_date = st.date_input("Start Date")
-end_date = st.date_input("End Date")
+assets_input = st.sidebar.text_input(
+    "Enter stock / ETF names (comma separated)",
+    "Reliance Industries, Infosys, Nifty 50 ETF"
+)
 
-if "assets" in st.session_state and st.button("Run Analysis"):
-    tickers = [a["symbol"] for a in st.session_state["assets"] if a["type"] != "mutual_fund"]
+initial_amount = st.sidebar.number_input("Initial Investment (INR)", value=100000, step=10000)
 
-    prices = yf.download(tickers, start=start_date, end=end_date)["Adj Close"].dropna()
+start_date = st.sidebar.date_input("Start Date", date(2021, 1, 1))
+end_date = st.sidebar.date_input("End Date", date.today())
+
+run_mc = st.sidebar.checkbox("Run Monte Carlo Simulation")
+num_sims = st.sidebar.number_input("No. of simulations", 1000, 20000, 5000, step=1000)
+
+run = st.sidebar.button("Run Analysis")
+
+# ------------------ Main ------------------
+
+if run:
+    user_assets = [x.strip() for x in assets_input.split(",") if x.strip()]
+    resolved = resolve_assets(user_assets)
+
+    valid = {k: v for k, v in resolved.items() if v}
+    invalid = [k for k, v in resolved.items() if not v]
+
+    if invalid:
+        st.warning(f"⚠️ Could not resolve: {', '.join(invalid)}")
+
+    if not valid:
+        st.error("❌ No valid assets resolved")
+        st.stop()
+
+    st.subheader("Resolved Assets")
+    st.write(valid)
+
+    prices = load_prices(list(valid.values()), start_date, end_date)
+
+    if prices.empty:
+        st.error("❌ No price data fetched")
+        st.stop()
+
     returns = prices.pct_change().dropna()
 
-    # Random allocation
-    weights = np.random.random(len(tickers))
+    # -------- Random Allocation --------
+    weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
 
-    portfolio_value = (prices * weights * initial_amount).sum(axis=1)
+    allocation = initial_amount * weights
+    alloc_df = pd.DataFrame({
+        "Asset": prices.columns,
+        "Weight": weights,
+        "Allocation (INR)": allocation
+    })
 
-    st.subheader("📊 Portfolio Value")
-    st.line_chart(portfolio_value)
+    st.subheader("💰 Portfolio Allocation")
+    st.dataframe(alloc_df)
 
-    # Volatility vs Return
-    port_return = returns.mean() * 252
-    port_vol = returns.std() * np.sqrt(252)
+    # -------- Portfolio Value --------
+    portfolio_value = (prices / prices.iloc[0]) @ allocation
 
+    st.subheader("📈 Portfolio Value Over Time")
     fig, ax = plt.subplots()
-    ax.scatter(port_vol, port_return)
-    ax.set_xlabel("Volatility")
-    ax.set_ylabel("Return")
+    ax.plot(portfolio_value)
+    ax.set_ylabel("Portfolio Value (INR)")
     st.pyplot(fig)
 
-    # ---------------- MONTE CARLO ----------------
-    sims = st.number_input("Monte Carlo Simulations", value=500, step=100)
-    if st.button("Run Monte Carlo"):
-        results = monte_carlo_simulation(returns, sims)
-        df = pd.DataFrame(results, columns=["Return", "Volatility", "Sharpe", "Weights"])
+    # -------- Monte Carlo --------
+    if run_mc:
+        st.subheader("🎯 Monte Carlo Simulation")
 
-        max_sharpe = df.loc[df["Sharpe"].idxmax()]
+        mean_returns = returns.mean() * 252
+        cov = returns.cov() * 252
 
-        fig2, ax2 = plt.subplots()
-        ax2.scatter(df["Volatility"], df["Return"], c=df["Sharpe"])
-        ax2.scatter(max_sharpe["Volatility"], max_sharpe["Return"], color="red", s=200)
-        st.pyplot(fig2)
+        results = np.zeros((3, num_sims))
+        weight_list = []
 
-        st.subheader("🏆 Best Sharpe Portfolio")
-        st.write(dict(zip(tickers, max_sharpe["Weights"])))
+        for i in range(num_sims):
+            w = np.random.random(len(prices.columns))
+            w /= w.sum()
+            weight_list.append(w)
+
+            ret = np.dot(w, mean_returns)
+            vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
+            sharpe = ret / vol
+
+            results[:, i] = [ret, vol, sharpe]
+
+        idx = results[2].argmax()
+
+        fig, ax = plt.subplots()
+        ax.scatter(results[1], results[0], c=results[2], cmap="viridis", s=5)
+        ax.scatter(results[1, idx], results[0, idx], color="red", s=200, marker="*")
+        ax.set_xlabel("Volatility")
+        ax.set_ylabel("Return")
+        st.pyplot(fig)
+
+        best_df = pd.DataFrame({
+            "Asset": prices.columns,
+            "Weight": weight_list[idx]
+        })
+
+        st.markdown("**Best Sharpe Ratio Portfolio Weights**")
+        st.dataframe(best_df)
+
+else:
+    st.info("👈 Enter inputs and click Run Analysis")
