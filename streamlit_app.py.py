@@ -1,208 +1,131 @@
+# FULL FEATURED STREAMLIT APP
+# Universal Stock / ETF / MF Search + Indicators + Portfolio + Monte Carlo
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
+from rapidfuzz import process
 import matplotlib.pyplot as plt
-import seaborn as sns
-import time
-from datetime import date
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="Portfolio Simulator", layout="wide")
-st.title("📈 Portfolio Simulation & Optimization (INR)")
+st.set_page_config(page_title="Universal Market App", layout="wide")
 
-# ---------------- INPUTS ----------------
-st.sidebar.header("Inputs")
+# ---------------- CACHE LOADERS ----------------
+@st.cache_data
+def load_mutual_funds():
+    data = requests.get("https://api.mfapi.in/mf").json()
+    df = pd.DataFrame(data)
+    df["type"] = "mutual_fund"
+    return df[["schemeName", "schemeCode", "type"]]
 
-initial_amount = st.sidebar.number_input(
-    "Initial Investment Amount (₹)",
-    min_value=1000,
-    value=100000,
-    step=1000
-)
+@st.cache_data
+def load_nse_symbols():
+    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    df = pd.read_csv(url)
+    df["symbol"] = df["SYMBOL"] + ".NS"
+    df = df.rename(columns={"NAME OF COMPANY": "name"})
+    df["type"] = "stock"
+    return df[["name", "symbol", "type"]]
 
-tickers_input = st.sidebar.text_input(
-    "Stock Tickers (NSE, comma separated)",
-    "RELIANCE,TCS,INFY"
-)
+@st.cache_data
+def load_etfs():
+    etfs = ["NIFTYBEES.NS", "BANKBEES.NS", "GOLDBEES.NS", "SILVERBEES.NS"]
+    rows = []
+    for t in etfs:
+        info = yf.Ticker(t).info
+        rows.append({"name": info.get("longName"), "symbol": t, "type": "etf"})
+    return pd.DataFrame(rows)
 
-start_date = st.sidebar.date_input("Start Date", date(2022, 1, 1))
-end_date = st.sidebar.date_input("End Date", date.today())
+# ---------------- SEARCH RESOLVER ----------------
+def resolve_asset(query, stocks, etfs, mfs):
+    candidates = []
 
-run_mc = st.sidebar.checkbox("Run Monte Carlo Optimization")
-num_simulations = st.sidebar.number_input(
-    "Number of Monte Carlo Simulations",
-    min_value=500,
-    max_value=20000,
-    value=5000,
-    step=500,
-    disabled=not run_mc
-)
+    for df in [stocks, etfs]:
+        match = process.extractOne(query, df["name"], score_cutoff=70)
+        if match:
+            name, score, idx = match
+            row = df.iloc[idx]
+            candidates.append({"name": row["name"], "symbol": row["symbol"], "type": row["type"], "score": score})
 
-run = st.sidebar.button("Run Analysis")
+    mf_match = process.extractOne(query, mfs["schemeName"], score_cutoff=70)
+    if mf_match:
+        name, score, idx = mf_match
+        row = mfs.iloc[idx]
+        candidates.append({"name": row["schemeName"], "symbol": row["schemeCode"], "type": "mutual_fund", "score": score})
 
-tickers = [t.strip().upper() + ".NS" for t in tickers_input.split(",") if t.strip()]
+    return max(candidates, key=lambda x: x["score"]) if candidates else None
 
-# ---------------- DATA FETCH ----------------
-@st.cache_data(ttl=3600)
-def load_prices(tickers, start, end):
-    prices = {}
+# ---------------- PORTFOLIO ----------------
+def monte_carlo_simulation(returns, sims):
+    results = []
+    for _ in range(sims):
+        w = np.random.random(len(returns.columns))
+        w /= np.sum(w)
+        port_ret = np.sum(returns.mean() * w) * 252
+        port_vol = np.sqrt(np.dot(w.T, np.dot(returns.cov() * 252, w)))
+        sharpe = port_ret / port_vol
+        results.append([port_ret, port_vol, sharpe, w])
+    return results
 
-    for ticker in tickers:
-        try:
-            df = yf.Ticker(ticker).history(
-                start=start,
-                end=end,
-                auto_adjust=True
-            )
+# ---------------- UI ----------------
+st.title("📈 Universal Market Intelligence Platform")
 
-            if not df.empty:
-                prices[ticker.replace(".NS", "")] = df["Close"]
+assets = st.multiselect("Search & Add Assets", options=[], placeholder="Type stock / ETF / MF name")
+query = st.text_input("Add asset")
 
-            time.sleep(1)
+if query:
+    stocks = load_nse_symbols()
+    etfs = load_etfs()
+    mfs = load_mutual_funds()
 
-        except Exception:
-            continue
+    result = resolve_asset(query, stocks, etfs, mfs)
+    if result:
+        st.success(f"Added {result['name']}")
+        st.session_state.setdefault("assets", []).append(result)
 
-    if len(prices) == 0:
-        return pd.DataFrame()
+# ---------------- PORTFOLIO INPUTS ----------------
+initial_amount = st.number_input("Initial Investment (INR)", value=100000)
+start_date = st.date_input("Start Date")
+end_date = st.date_input("End Date")
 
-    return pd.DataFrame(prices)
+if "assets" in st.session_state and st.button("Run Analysis"):
+    tickers = [a["symbol"] for a in st.session_state["assets"] if a["type"] != "mutual_fund"]
 
-# ---------------- MAIN ----------------
-if run:
-    prices = load_prices(tickers, start_date, end_date)
-
-    if prices.empty:
-        st.error("❌ No valid data returned. Try fewer tickers or wait a minute.")
-        st.stop()
-
+    prices = yf.download(tickers, start=start_date, end=end_date)["Adj Close"].dropna()
     returns = prices.pct_change().dropna()
 
-    # ---------------- BASE RANDOM PORTFOLIO ----------------
-    n = prices.shape[1]
-    base_weights = np.random.random(n)
-    base_weights /= base_weights.sum()
+    # Random allocation
+    weights = np.random.random(len(tickers))
+    weights /= weights.sum()
 
-    allocation_df = pd.DataFrame({
-        "Stock": prices.columns,
-        "Weight": base_weights,
-        "Allocated Amount (₹)": base_weights * initial_amount
-    })
+    portfolio_value = (prices * weights * initial_amount).sum(axis=1)
 
-    shares = (base_weights * initial_amount) / prices.iloc[0]
-    portfolio_value = (prices * shares).sum(axis=1)
+    st.subheader("📊 Portfolio Value")
+    st.line_chart(portfolio_value)
 
-    # ---------------- DISPLAY BASE ----------------
-    st.subheader("🧮 Random Portfolio Allocation")
-    st.dataframe(allocation_df.style.format({
-        "Weight": "{:.2%}",
-        "Allocated Amount (₹)": "₹{:,.0f}"
-    }))
+    # Volatility vs Return
+    port_return = returns.mean() * 252
+    port_vol = returns.std() * np.sqrt(252)
 
-    # ---------------- PRICES ----------------
-    st.subheader("📊 Stock Prices")
-    fig1, ax1 = plt.subplots()
-    prices.plot(ax=ax1)
-    ax1.set_ylabel("Price (₹)")
-    ax1.grid(True)
-    st.pyplot(fig1)
+    fig, ax = plt.subplots()
+    ax.scatter(port_vol, port_return)
+    ax.set_xlabel("Volatility")
+    ax.set_ylabel("Return")
+    st.pyplot(fig)
 
-    # ---------------- % CHANGE ----------------
-    st.subheader("📈 Percentage Change")
-    pct_change = (prices / prices.iloc[0] - 1) * 100
-    fig2, ax2 = plt.subplots()
-    pct_change.plot(ax=ax2)
-    ax2.set_ylabel("Change (%)")
-    ax2.grid(True)
-    st.pyplot(fig2)
+    # ---------------- MONTE CARLO ----------------
+    sims = st.number_input("Monte Carlo Simulations", value=500, step=100)
+    if st.button("Run Monte Carlo"):
+        results = monte_carlo_simulation(returns, sims)
+        df = pd.DataFrame(results, columns=["Return", "Volatility", "Sharpe", "Weights"])
 
-    # ---------------- RETURNS ----------------
-    st.subheader("📉 Daily Returns")
-    fig3, ax3 = plt.subplots()
-    returns.plot(ax=ax3)
-    ax3.set_ylabel("Daily Return")
-    ax3.grid(True)
-    st.pyplot(fig3)
+        max_sharpe = df.loc[df["Sharpe"].idxmax()]
 
-    # ---------------- CORRELATION ----------------
-    st.subheader("🔥 Correlation Heatmap")
-    fig4, ax4 = plt.subplots()
-    sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax4)
-    st.pyplot(fig4)
+        fig2, ax2 = plt.subplots()
+        ax2.scatter(df["Volatility"], df["Return"], c=df["Sharpe"])
+        ax2.scatter(max_sharpe["Volatility"], max_sharpe["Return"], color="red", s=200)
+        st.pyplot(fig2)
 
-    # ---------------- PORTFOLIO VALUE ----------------
-    st.subheader("📈 Portfolio Value Over Time")
-    fig5, ax5 = plt.subplots()
-    portfolio_value.plot(ax=ax5, color="black")
-    ax5.set_ylabel("Portfolio Value (₹)")
-    ax5.grid(True)
-    st.pyplot(fig5)
-
-    # ---------------- MONTE CARLO (OPTIONAL) ----------------
-    if run_mc:
-        st.subheader("🎯 Monte Carlo Portfolio Optimization")
-
-        mean_returns = returns.mean() * 252
-        cov_matrix = returns.cov() * 252
-
-        results = np.zeros((3, num_simulations))
-        weight_store = []
-
-        for i in range(num_simulations):
-            w = np.random.random(n)
-            w /= np.sum(w)
-            weight_store.append(w)
-
-            port_return = np.dot(w, mean_returns)
-            port_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
-            sharpe = port_return / port_vol
-
-            results[0, i] = port_return
-            results[1, i] = port_vol
-            results[2, i] = sharpe
-
-        max_idx = np.argmax(results[2])
-        best_weights = weight_store[max_idx]
-
-        # ---------------- MC SCATTER ----------------
-        fig6, ax6 = plt.subplots()
-        scatter = ax6.scatter(
-            results[1],
-            results[0],
-            c=results[2],
-            cmap="viridis",
-            s=6
-        )
-
-        ax6.scatter(
-            results[1, max_idx],
-            results[0, max_idx],
-            color="red",
-            marker="*",
-            s=300,
-            label="Highest Sharpe Ratio"
-        )
-
-        ax6.set_xlabel("Volatility (Risk)")
-        ax6.set_ylabel("Expected Return")
-        ax6.legend()
-        fig6.colorbar(scatter, label="Sharpe Ratio")
-        st.pyplot(fig6)
-
-        # ---------------- BEST WEIGHTS ----------------
-        st.subheader("🏆 Best Monte Carlo Portfolio Weights")
-
-        best_df = pd.DataFrame({
-            "Stock": prices.columns,
-            "Weight": best_weights,
-            "Allocated Amount (₹)": best_weights * initial_amount
-        })
-
-        st.dataframe(best_df.style.format({
-            "Weight": "{:.2%}",
-            "Allocated Amount (₹)": "₹{:,.0f}"
-        }))
-
-else:
-    st.info("👈 Enter inputs and click **Run Analysis**")
+        st.subheader("🏆 Best Sharpe Portfolio")
+        st.write(dict(zip(tickers, max_sharpe["Weights"])))
