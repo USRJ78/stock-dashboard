@@ -10,7 +10,7 @@ import requests
 from datetime import date
 
 # ================= CONFIG =================
-ALPHA_VANTAGE_API_KEY = YVPHMGAAFPB3JZHN
+ALPHA_VANTAGE_API_KEY = "YVPHMGAAFPB3JZHN"
 
 st.set_page_config(
     page_title="Stock Analysis & Portfolio Dashboard",
@@ -159,4 +159,5 @@ if run:
 
 else:
     st.info("👈 Enter inputs and click **Run Analysis**")
+
 
