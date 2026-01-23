@@ -1,5 +1,5 @@
 # Streamlit Stock Analysis & Portfolio Dashboard
-# Yahoo Finance – Fast & Cloud-Safe Version
+# Yahoo Finance – Stable Version (FIXED)
 
 import streamlit as st
 import yfinance as yf
@@ -12,8 +12,8 @@ from datetime import date
 # ---------------- Page Config ----------------
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("📈 Stock Analysis & Portfolio Dashboard (Yahoo Finance)")
-st.caption("Optimized for speed & stability on Streamlit Cloud")
+st.title("📈 Stock Analysis & Portfolio Dashboard")
+st.caption("Yahoo Finance • Cached • Cloud-safe")
 
 # ---------------- Sidebar ----------------
 st.sidebar.header("Inputs")
@@ -28,9 +28,9 @@ end_date = st.sidebar.date_input("End Date", date.today())
 
 run = st.sidebar.button("Run Analysis")
 
-# ---------------- Yahoo Loader (FAST) ----------------
+# ---------------- Data Loader ----------------
 @st.cache_data(ttl=3600)
-def fetch_single_ticker(ticker, start, end):
+def fetch_ticker(ticker, start, end):
     try:
         df = yf.download(
             ticker,
@@ -40,39 +40,41 @@ def fetch_single_ticker(ticker, start, end):
             progress=False,
             threads=False
         )
-        if df.empty:
+        if df.empty or "Close" not in df:
             return None
         return df["Close"]
     except Exception:
         return None
 
-def load_data(tickers, start, end):
-    prices = {}
+def load_data(ticker_list, start, end):
+    series_list = []
 
-    for t in tickers:
-        series = fetch_single_ticker(t, start, end)
-        if series is not None:
-            prices[t] = series
+    for t in ticker_list:
+        s = fetch_ticker(t, start, end)
+        if isinstance(s, pd.Series) and not s.empty:
+            s.name = t
+            series_list.append(s)
 
-    if not prices:
+    if not series_list:
         return pd.DataFrame()
 
-    return pd.DataFrame(prices).dropna()
+    return pd.concat(series_list, axis=1).dropna()
 
 # ---------------- Main Logic ----------------
 if run:
     tickers_list = [t.strip().upper() for t in tickers.split(",")]
 
-    with st.spinner("Fetching data from Yahoo Finance..."):
+    with st.spinner("Fetching stock data..."):
         prices = load_data(tickers_list, start_date, end_date)
 
     if prices.empty:
         st.error(
-            "❌ Yahoo Finance returned no data.\n\n"
-            "Tips:\n"
-            "- Try fewer tickers\n"
-            "- NSE tickers may be temporarily blocked\n"
-            "- Try again after a minute"
+            "❌ No valid data returned.\n\n"
+            "Possible reasons:\n"
+            "- Yahoo rate-limited NSE stocks\n"
+            "- Invalid ticker symbol\n"
+            "- Too many requests\n\n"
+            "👉 Try fewer tickers or retry after 1–2 minutes."
         )
         st.stop()
 
@@ -80,27 +82,26 @@ if run:
 
     # ---------- % Change ----------
     st.subheader("📊 Percentage Change Comparison")
-    pct_change = (prices.divide(prices.iloc[0]) - 1) * 100
+    pct_change = (prices / prices.iloc[0] - 1) * 100
 
     fig, ax = plt.subplots()
     pct_change.plot(ax=ax)
     ax.set_ylabel("% Change")
     st.pyplot(fig)
-    plt.clf()
+    plt.close()
 
     # ---------- Histogram ----------
     st.subheader("📈 Returns Histogram")
-    returns.plot(kind="hist", bins=40, alpha=0.7)
+    returns.hist(bins=40)
     st.pyplot(plt.gcf())
-    plt.clf()
+    plt.close()
 
     # ---------- Correlation ----------
     st.subheader("🔥 Correlation Heatmap")
-    sns.set_theme()
     fig, ax = plt.subplots()
     sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax)
     st.pyplot(fig)
-    plt.clf()
+    plt.close()
 
     # ---------- Portfolio Optimization ----------
     st.subheader("🧮 Portfolio Optimization")
@@ -127,15 +128,13 @@ if run:
     idx = np.argmax(results[2])
 
     st.markdown("### ✅ Optimal Portfolio Weights")
-    st.dataframe(
-        pd.DataFrame({
-            "Ticker": prices.columns,
-            "Weight": weights_record[idx]
-        })
-    )
+    st.dataframe(pd.DataFrame({
+        "Ticker": prices.columns,
+        "Weight": weights_record[idx]
+    }))
 
     st.markdown(f"**Expected Return:** {results[0, idx]*100:.2f}%")
-    st.markdown(f"**Volatility:** {results[1, idx]*100:.2f}%")
+    st.markdown(f"**Expected Volatility:** {results[1, idx]*100:.2f}%")
 
     fig, ax = plt.subplots()
     ax.scatter(results[1], results[0], c=results[2], cmap="viridis", s=6)
@@ -143,7 +142,7 @@ if run:
     ax.set_xlabel("Volatility")
     ax.set_ylabel("Return")
     st.pyplot(fig)
-    plt.clf()
+    plt.close()
 
 else:
     st.info("👈 Enter inputs and click **Run Analysis**")
