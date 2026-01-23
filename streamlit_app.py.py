@@ -94,7 +94,7 @@ end_date = st.sidebar.date_input("End Date", date.today())
 run_mc = st.sidebar.checkbox("Run Monte Carlo Simulation")
 num_sims = st.sidebar.number_input("No. of simulations", 1000, 20000, 5000, step=1000)
 
-run = st.sidebar.button("Run Analysis")("Run Analysis")
+run = st.sidebar.button("Run Analysis")
 
 # ------------------ Main ------------------
 
