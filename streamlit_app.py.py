@@ -9,7 +9,7 @@ from datetime import date
 
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="Portfolio Simulator", layout="wide")
-st.title("📈 Portfolio Simulation & Efficient Frontier (INR)")
+st.title("📈 Portfolio Simulation & Optimization (INR)")
 
 # ---------------- INPUTS ----------------
 st.sidebar.header("Inputs")
@@ -28,6 +28,16 @@ tickers_input = st.sidebar.text_input(
 
 start_date = st.sidebar.date_input("Start Date", date(2022, 1, 1))
 end_date = st.sidebar.date_input("End Date", date.today())
+
+run_mc = st.sidebar.checkbox("Run Monte Carlo Optimization")
+num_simulations = st.sidebar.number_input(
+    "Number of Monte Carlo Simulations",
+    min_value=500,
+    max_value=20000,
+    value=5000,
+    step=500,
+    disabled=not run_mc
+)
 
 run = st.sidebar.button("Run Analysis")
 
@@ -64,66 +74,33 @@ if run:
     prices = load_prices(tickers, start_date, end_date)
 
     if prices.empty:
-        st.error("""
-❌ No valid data returned.
-
-Possible reasons:
-- Yahoo Finance rate-limited NSE
-- Invalid ticker
-- Too many refreshes
-
-👉 Try fewer tickers or wait 1 minute.
-""")
+        st.error("❌ No valid data returned. Try fewer tickers or wait a minute.")
         st.stop()
 
     returns = prices.pct_change().dropna()
 
-    # ---------------- BASIC PORTFOLIO ----------------
+    # ---------------- BASE RANDOM PORTFOLIO ----------------
     n = prices.shape[1]
-    weights = np.random.random(n)
-    weights /= weights.sum()
+    base_weights = np.random.random(n)
+    base_weights /= base_weights.sum()
 
     allocation_df = pd.DataFrame({
         "Stock": prices.columns,
-        "Weight": weights,
-        "Allocated Amount (₹)": weights * initial_amount
+        "Weight": base_weights,
+        "Allocated Amount (₹)": base_weights * initial_amount
     })
 
-    shares = (weights * initial_amount) / prices.iloc[0]
+    shares = (base_weights * initial_amount) / prices.iloc[0]
     portfolio_value = (prices * shares).sum(axis=1)
 
-    # ---------------- MONTE CARLO PORTFOLIOS ----------------
-    num_portfolios = 5000
-    results = np.zeros((3, num_portfolios))
-    weights_record = []
-
-    mean_returns = returns.mean() * 252
-    cov_matrix = returns.cov() * 252
-
-    for i in range(num_portfolios):
-        w = np.random.random(n)
-        w /= np.sum(w)
-        weights_record.append(w)
-
-        port_return = np.dot(w, mean_returns)
-        port_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
-        sharpe = port_return / port_vol
-
-        results[0, i] = port_return
-        results[1, i] = port_vol
-        results[2, i] = sharpe
-
-    max_sharpe_idx = np.argmax(results[2])
-    max_sharpe_weights = weights_record[max_sharpe_idx]
-
-    # ---------------- DISPLAY ----------------
+    # ---------------- DISPLAY BASE ----------------
     st.subheader("🧮 Random Portfolio Allocation")
     st.dataframe(allocation_df.style.format({
         "Weight": "{:.2%}",
         "Allocated Amount (₹)": "₹{:,.0f}"
     }))
 
-    # ---------------- PRICE CHART ----------------
+    # ---------------- PRICES ----------------
     st.subheader("📊 Stock Prices")
     fig1, ax1 = plt.subplots()
     prices.plot(ax=ax1)
@@ -162,32 +139,70 @@ Possible reasons:
     ax5.grid(True)
     st.pyplot(fig5)
 
-    # ---------------- EFFICIENT FRONTIER ----------------
-    st.subheader("🎯 Efficient Frontier (Max Sharpe Highlighted)")
+    # ---------------- MONTE CARLO (OPTIONAL) ----------------
+    if run_mc:
+        st.subheader("🎯 Monte Carlo Portfolio Optimization")
 
-    fig6, ax6 = plt.subplots()
-    scatter = ax6.scatter(
-        results[1],
-        results[0],
-        c=results[2],
-        cmap="viridis",
-        s=5
-    )
+        mean_returns = returns.mean() * 252
+        cov_matrix = returns.cov() * 252
 
-    ax6.scatter(
-        results[1, max_sharpe_idx],
-        results[0, max_sharpe_idx],
-        color="red",
-        marker="*",
-        s=250,
-        label="Max Sharpe Ratio"
-    )
+        results = np.zeros((3, num_simulations))
+        weight_store = []
 
-    ax6.set_xlabel("Volatility (Risk)")
-    ax6.set_ylabel("Expected Return")
-    ax6.legend()
-    fig6.colorbar(scatter, label="Sharpe Ratio")
-    st.pyplot(fig6)
+        for i in range(num_simulations):
+            w = np.random.random(n)
+            w /= np.sum(w)
+            weight_store.append(w)
+
+            port_return = np.dot(w, mean_returns)
+            port_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
+            sharpe = port_return / port_vol
+
+            results[0, i] = port_return
+            results[1, i] = port_vol
+            results[2, i] = sharpe
+
+        max_idx = np.argmax(results[2])
+        best_weights = weight_store[max_idx]
+
+        # ---------------- MC SCATTER ----------------
+        fig6, ax6 = plt.subplots()
+        scatter = ax6.scatter(
+            results[1],
+            results[0],
+            c=results[2],
+            cmap="viridis",
+            s=6
+        )
+
+        ax6.scatter(
+            results[1, max_idx],
+            results[0, max_idx],
+            color="red",
+            marker="*",
+            s=300,
+            label="Highest Sharpe Ratio"
+        )
+
+        ax6.set_xlabel("Volatility (Risk)")
+        ax6.set_ylabel("Expected Return")
+        ax6.legend()
+        fig6.colorbar(scatter, label="Sharpe Ratio")
+        st.pyplot(fig6)
+
+        # ---------------- BEST WEIGHTS ----------------
+        st.subheader("🏆 Best Monte Carlo Portfolio Weights")
+
+        best_df = pd.DataFrame({
+            "Stock": prices.columns,
+            "Weight": best_weights,
+            "Allocated Amount (₹)": best_weights * initial_amount
+        })
+
+        st.dataframe(best_df.style.format({
+            "Weight": "{:.2%}",
+            "Allocated Amount (₹)": "₹{:,.0f}"
+        }))
 
 else:
     st.info("👈 Enter inputs and click **Run Analysis**")
