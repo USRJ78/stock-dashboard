@@ -5,10 +5,11 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
+from datetime import date
 
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="Portfolio Simulator", layout="wide")
-st.title("📈 Portfolio Simulation & Analysis (INR)")
+st.title("📈 Portfolio Simulation & Efficient Frontier (INR)")
 
 # ---------------- INPUTS ----------------
 st.sidebar.header("Inputs")
@@ -25,26 +26,30 @@ tickers_input = st.sidebar.text_input(
     "RELIANCE,TCS,INFY"
 )
 
-tickers = [t.strip().upper() + ".NS" for t in tickers_input.split(",") if t.strip()]
+start_date = st.sidebar.date_input("Start Date", date(2022, 1, 1))
+end_date = st.sidebar.date_input("End Date", date.today())
 
-run = st.sidebar.button("Run Portfolio Simulation")
+run = st.sidebar.button("Run Analysis")
+
+tickers = [t.strip().upper() + ".NS" for t in tickers_input.split(",") if t.strip()]
 
 # ---------------- DATA FETCH ----------------
 @st.cache_data(ttl=3600)
-def load_prices(tickers):
+def load_prices(tickers, start, end):
     prices = {}
 
     for ticker in tickers:
         try:
             df = yf.Ticker(ticker).history(
-                period="1y",
+                start=start,
+                end=end,
                 auto_adjust=True
             )
 
             if not df.empty:
                 prices[ticker.replace(".NS", "")] = df["Close"]
 
-            time.sleep(1)  # prevent rate limit
+            time.sleep(1)
 
         except Exception:
             continue
@@ -56,7 +61,7 @@ def load_prices(tickers):
 
 # ---------------- MAIN ----------------
 if run:
-    prices = load_prices(tickers)
+    prices = load_prices(tickers, start_date, end_date)
 
     if prices.empty:
         st.error("""
@@ -67,30 +72,53 @@ Possible reasons:
 - Invalid ticker
 - Too many refreshes
 
-👉 Try 1–2 tickers or wait 1 minute.
+👉 Try fewer tickers or wait 1 minute.
 """)
         st.stop()
 
     returns = prices.pct_change().dropna()
 
-    # ---------------- RANDOM WEIGHTS ----------------
+    # ---------------- BASIC PORTFOLIO ----------------
     n = prices.shape[1]
     weights = np.random.random(n)
     weights /= weights.sum()
 
-    weight_df = pd.DataFrame({
+    allocation_df = pd.DataFrame({
         "Stock": prices.columns,
         "Weight": weights,
         "Allocated Amount (₹)": weights * initial_amount
     })
 
-    # ---------------- PORTFOLIO VALUE ----------------
     shares = (weights * initial_amount) / prices.iloc[0]
     portfolio_value = (prices * shares).sum(axis=1)
 
+    # ---------------- MONTE CARLO PORTFOLIOS ----------------
+    num_portfolios = 5000
+    results = np.zeros((3, num_portfolios))
+    weights_record = []
+
+    mean_returns = returns.mean() * 252
+    cov_matrix = returns.cov() * 252
+
+    for i in range(num_portfolios):
+        w = np.random.random(n)
+        w /= np.sum(w)
+        weights_record.append(w)
+
+        port_return = np.dot(w, mean_returns)
+        port_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
+        sharpe = port_return / port_vol
+
+        results[0, i] = port_return
+        results[1, i] = port_vol
+        results[2, i] = sharpe
+
+    max_sharpe_idx = np.argmax(results[2])
+    max_sharpe_weights = weights_record[max_sharpe_idx]
+
     # ---------------- DISPLAY ----------------
-    st.subheader("🧮 Portfolio Allocation")
-    st.dataframe(weight_df.style.format({
+    st.subheader("🧮 Random Portfolio Allocation")
+    st.dataframe(allocation_df.style.format({
         "Weight": "{:.2%}",
         "Allocated Amount (₹)": "₹{:,.0f}"
     }))
@@ -103,7 +131,7 @@ Possible reasons:
     ax1.grid(True)
     st.pyplot(fig1)
 
-    # ---------------- PERCENT CHANGE ----------------
+    # ---------------- % CHANGE ----------------
     st.subheader("📈 Percentage Change")
     pct_change = (prices / prices.iloc[0] - 1) * 100
     fig2, ax2 = plt.subplots()
@@ -126,7 +154,7 @@ Possible reasons:
     sns.heatmap(returns.corr(), annot=True, cmap="coolwarm", ax=ax4)
     st.pyplot(fig4)
 
-    # ---------------- PORTFOLIO GROWTH ----------------
+    # ---------------- PORTFOLIO VALUE ----------------
     st.subheader("📈 Portfolio Value Over Time")
     fig5, ax5 = plt.subplots()
     portfolio_value.plot(ax=ax5, color="black")
@@ -134,12 +162,32 @@ Possible reasons:
     ax5.grid(True)
     st.pyplot(fig5)
 
-    # ---------------- PIE CHART ----------------
-    st.subheader("🎯 Weight Allocation")
+    # ---------------- EFFICIENT FRONTIER ----------------
+    st.subheader("🎯 Efficient Frontier (Max Sharpe Highlighted)")
+
     fig6, ax6 = plt.subplots()
-    ax6.pie(weights, labels=prices.columns, autopct="%1.1f%%")
-    ax6.axis("equal")
+    scatter = ax6.scatter(
+        results[1],
+        results[0],
+        c=results[2],
+        cmap="viridis",
+        s=5
+    )
+
+    ax6.scatter(
+        results[1, max_sharpe_idx],
+        results[0, max_sharpe_idx],
+        color="red",
+        marker="*",
+        s=250,
+        label="Max Sharpe Ratio"
+    )
+
+    ax6.set_xlabel("Volatility (Risk)")
+    ax6.set_ylabel("Expected Return")
+    ax6.legend()
+    fig6.colorbar(scatter, label="Sharpe Ratio")
     st.pyplot(fig6)
 
 else:
-    st.info("👈 Enter inputs in the sidebar and click **Run Portfolio Simulation**")
+    st.info("👈 Enter inputs and click **Run Analysis**")
