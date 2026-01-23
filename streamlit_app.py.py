@@ -196,4 +196,4 @@ if run:
         st.dataframe(best_df)
 
 else:
-    st.info("👈 Select assets and click Run Analysis")("👈 Enter inputs and click Run Analysis")
+    st.info("👈 Select assets and click Run Analysis")
