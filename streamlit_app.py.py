@@ -6,7 +6,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import requests
 import plotly.express as px
 from difflib import get_close_matches
 from datetime import date
@@ -49,10 +48,7 @@ def resolve_assets(user_inputs):
             continue
 
         matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
-        if matches:
-            resolved[item] = stock_map[matches[0]]
-        else:
-            resolved[item] = None
+        resolved[item] = stock_map[matches[0]] if matches else None
 
     return resolved
 
@@ -66,18 +62,17 @@ def load_prices(tickers, start, end):
     data.index = pd.to_datetime(data.index)
     return data
 
-# -------- Your Plotly Function (Streamlit compatible) --------
+# -------- Plot function --------
 def plot_financial_data(df, title):
     fig = px.line(title=title)
-
-    for i in df.columns[1:]:
-        fig.add_scatter(x=df['Date'], y=df[i], name=i)
+    for col in df.columns[1:]:
+        fig.add_scatter(x=df['Date'], y=df[col], name=col)
 
     fig.update_traces(line_width=3)
     fig.update_layout({'plot_bgcolor': "white"})
     st.plotly_chart(fig, use_container_width=True)
 
-# -------- Your Scaling Function --------
+# -------- Scaling function --------
 def price_scaling(raw_prices_df):
     scaled_prices_df = raw_prices_df.copy()
     for i in raw_prices_df.columns[1:]:
@@ -97,16 +92,8 @@ def load_search_options():
 
 search_options = load_search_options()
 
-selected_assets = st.sidebar.multiselect(
-    "🔍 Search & select stocks / ETFs (recommended)",
-    options=search_options
-)
-
-manual_assets = st.sidebar.text_input(
-    "✍️ Or manually type names / tickers (comma separated)",
-    ""
-)
-
+selected_assets = st.sidebar.multiselect("🔍 Search & select stocks / ETFs (recommended)", options=search_options)
+manual_assets = st.sidebar.text_input("✍️ Or manually type names / tickers (comma separated)", "")
 initial_amount = st.sidebar.number_input("Initial Investment (INR)", value=100000, step=10000)
 
 start_date = st.sidebar.date_input("Start Date", date(2021, 1, 1))
@@ -120,75 +107,27 @@ run = st.sidebar.button("Run Analysis")
 # ------------------ Main ------------------
 
 if run:
-    user_assets = []
-
-    if selected_assets:
-        user_assets.extend(selected_assets)
-
-    if manual_assets.strip():
-        user_assets.extend([x.strip() for x in manual_assets.split(",") if x.strip()])
-
+    user_assets = selected_assets + [x.strip() for x in manual_assets.split(",") if x.strip()]
     if not user_assets:
         st.error("❌ Please select or enter at least one asset")
         st.stop()
 
     resolved = resolve_assets(user_assets)
-
     valid = {k: v for k, v in resolved.items() if v}
-    invalid = [k for k, v in resolved.items() if not v]
-
-    if invalid:
-        st.warning(f"⚠️ Could not resolve: {', '.join(invalid)}")
 
     if not valid:
         st.error("❌ No valid assets resolved")
         st.stop()
 
-    st.subheader("Resolved Assets")
-    st.write(valid)
-
     prices = load_prices(list(valid.values()), start_date, end_date)
-
-    if prices.empty:
-        st.error("❌ No price data fetched")
-        st.stop()
-
     returns = prices.pct_change().dropna()
 
-    # -------- Random Allocation --------
+    # -------- Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
     allocation = initial_amount * weights
 
-    alloc_df = pd.DataFrame({
-        "Asset": prices.columns,
-        "Weight": weights,
-        "Allocation (INR)": allocation
-    })
-
-    st.subheader("💰 Portfolio Allocation")
-    st.dataframe(alloc_df)
-
-    # -------- Percentage Change Graph (Scaled Prices) --------
-    st.subheader("📊 Percentage Change (Scaled Prices)")
-    scaled_prices_df = prices.copy()
-    scaled_prices_df["Date"] = scaled_prices_df.index
-    scaled_prices_df = scaled_prices_df[["Date"] + [c for c in scaled_prices_df.columns if c != "Date"]]
-    scaled_prices_df = price_scaling(scaled_prices_df)
-    plot_financial_data(scaled_prices_df, "Scaled Price Change (Base = 1.0)")
-
-    # -------- Price Movement Graph (SAME Plotly style) --------
-    st.subheader("📈 Price Movement (Actual Prices)")
-
-    raw_prices_df = prices.copy()
-    raw_prices_df["Date"] = raw_prices_df.index
-    raw_prices_df = raw_prices_df[["Date"] + [c for c in raw_prices_df.columns if c != "Date"]]
-
-    # Similar to your approach: use plot_financial_data for raw prices
-    plot_financial_data(raw_prices_df, "Price Movement (Actual Prices)")
-
-    # -------- Portfolio Positions DF --------
-    portfolio_positions = (prices / prices.iloc[0]) * allocation  # INR value per asset over time
+    portfolio_positions = (prices / prices.iloc[0]) * allocation
     portfolio_value = portfolio_positions.sum(axis=1)
 
     portfolio_df = portfolio_positions.copy()
@@ -197,40 +136,43 @@ if run:
     portfolio_df["Date"] = portfolio_df.index
     portfolio_df = portfolio_df[["Date"] + [c for c in portfolio_df.columns if c != "Date"]]
 
-    # -------- Portfolio Positions (YOUR requested call) --------
+    # -------- Scaled Price Change --------
+    st.subheader("📊 Percentage Change (Scaled Prices)")
+    scaled_prices_df = prices.copy()
+    scaled_prices_df["Date"] = scaled_prices_df.index
+    scaled_prices_df = scaled_prices_df[["Date"] + list(prices.columns)]
+    scaled_prices_df = price_scaling(scaled_prices_df)
+    plot_financial_data(scaled_prices_df, "Scaled Price Change (Base = 1.0)")
+
+    # -------- Price Movement --------
+    st.subheader("📈 Price Movement (Actual Prices)")
+    raw_prices_df = prices.copy()
+    raw_prices_df["Date"] = raw_prices_df.index
+    raw_prices_df = raw_prices_df[["Date"] + list(prices.columns)]
+    plot_financial_data(raw_prices_df, "Price Movement (Actual Prices)")
+
+    # -------- Portfolio Positions --------
     st.subheader("💼 Portfolio Positions (INR)")
     plot_financial_data(
         portfolio_df.drop(['Portfolio Value [$]', 'Portfolio Daily Return [%]'], axis=1),
         'Portfolio positions [$]'
     )
 
-    # -------- Daily Returns (Your Plot) --------
+    # -------- Portfolio Value Over Time (NEW) --------
+    st.subheader("💼 Total Portfolio Value Over Time")
+    plot_financial_data(
+        portfolio_df[['Date', 'Portfolio Value [$]']],
+        'Total Portfolio Value [$]'
+    )
+
+    # -------- Daily Returns --------
     st.subheader("📉 Daily Returns (%)")
     daily_returns_df = returns * 100
     daily_returns_df["Date"] = daily_returns_df.index
-    daily_returns_df = daily_returns_df[["Date"] + [c for c in daily_returns_df.columns if c != "Date"]]
+    daily_returns_df = daily_returns_df[["Date"] + list(returns.columns)]
     plot_financial_data(daily_returns_df, 'Percentage Daily Returns [%]')
 
-    # -------- Correlation Heatmap --------
-    st.subheader("🔥 Correlation Heatmap")
-    corr = returns.corr()
-    fig, ax = plt.subplots()
-    im = ax.imshow(corr, cmap="coolwarm")
-    ax.set_xticks(range(len(corr.columns)))
-    ax.set_yticks(range(len(corr.columns)))
-    ax.set_xticklabels(corr.columns, rotation=45, ha="right")
-    ax.set_yticklabels(corr.columns)
-    fig.colorbar(im, ax=ax)
-    st.pyplot(fig)
-
-    # -------- Portfolio Value Over Time --------
-    st.subheader("💼 Portfolio Value Over Time")
-    fig, ax = plt.subplots()
-    ax.plot(portfolio_value)
-    ax.set_ylabel("Portfolio Value (INR)")
-    st.pyplot(fig)
-
-    # -------- Histogram (same selected assets) --------
+    # -------- Histogram --------
     st.subheader("📊 Daily % Change Distribution (Histogram)")
     fig = px.histogram(daily_returns_df.drop(columns=["Date"]))
     fig.update_layout({'plot_bgcolor': "white"})
