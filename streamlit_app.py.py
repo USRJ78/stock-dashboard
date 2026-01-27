@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
+import plotly.graph_objects as go
 import seaborn as sns
 from difflib import get_close_matches
 from datetime import date
@@ -36,21 +37,15 @@ ETF_MAP = {
 def resolve_assets(user_inputs):
     stock_map = load_nse_stock_list()
     resolved = {}
-
     for item in user_inputs:
         key = item.upper().strip()
-
         if "." in key:
             resolved[item] = key
-            continue
-
-        if key in ETF_MAP:
+        elif key in ETF_MAP:
             resolved[item] = ETF_MAP[key]
-            continue
-
-        matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
-        resolved[item] = stock_map[matches[0]] if matches else None
-
+        else:
+            matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
+            resolved[item] = stock_map[matches[0]] if matches else None
     return resolved
 
 @st.cache_data(ttl=300)
@@ -63,17 +58,14 @@ def load_prices(tickers, start, end):
     data.index = pd.to_datetime(data.index)
     return data
 
-# -------- Plot function --------
 def plot_financial_data(df, title):
     fig = px.line(title=title)
     for col in df.columns[1:]:
         fig.add_scatter(x=df['Date'], y=df[col], name=col)
-
     fig.update_traces(line_width=3)
     fig.update_layout({'plot_bgcolor': "white"})
     st.plotly_chart(fig, use_container_width=True)
 
-# -------- Scaling function --------
 def price_scaling(raw_prices_df):
     scaled_prices_df = raw_prices_df.copy()
     for i in raw_prices_df.columns[1:]:
@@ -87,9 +79,7 @@ st.sidebar.header("Inputs")
 @st.cache_data(ttl=3600)
 def load_search_options():
     stock_map = load_nse_stock_list()
-    etfs = list(ETF_MAP.keys())
-    stocks = list(stock_map.keys())
-    return sorted(stocks + etfs)
+    return sorted(list(stock_map.keys()) + list(ETF_MAP.keys()))
 
 search_options = load_search_options()
 
@@ -108,6 +98,7 @@ run = st.sidebar.button("Run Analysis")
 # ------------------ Main ------------------
 
 if run:
+
     user_assets = selected_assets + [x.strip() for x in manual_assets.split(",") if x.strip()]
     if not user_assets:
         st.error("❌ Please select or enter at least one asset")
@@ -115,7 +106,6 @@ if run:
 
     resolved = resolve_assets(user_assets)
     valid = {k: v for k, v in resolved.items() if v}
-
     if not valid:
         st.error("❌ No valid assets resolved")
         st.stop()
@@ -123,7 +113,6 @@ if run:
     prices = load_prices(list(valid.values()), start_date, end_date)
     returns = prices.pct_change().dropna()
 
-    # -------- Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
     allocation = initial_amount * weights
@@ -173,9 +162,8 @@ if run:
     daily_returns_df = daily_returns_df[["Date"] + list(returns.columns)]
     plot_financial_data(daily_returns_df, 'Percentage Daily Returns [%]')
 
-    # -------- Correlation Heatmap (Seaborn) --------
+    # -------- Heatmap --------
     st.subheader("🔥 Correlation Heatmap")
-
     plt.figure(figsize=(10, 8))
     sns.heatmap(daily_returns_df.drop(columns=['Date']).corr(), annot=True)
     st.pyplot(plt.gcf())
@@ -187,43 +175,38 @@ if run:
     fig.update_layout({'plot_bgcolor': "white"})
     st.plotly_chart(fig, use_container_width=True)
 
-    # -------- Monte Carlo --------
+    # -------- Monte Carlo (Plotly version) --------
     if run_mc:
         st.subheader("🎯 Monte Carlo Simulation")
 
         mean_returns = returns.mean() * 252
         cov = returns.cov() * 252
 
-        results = np.zeros((3, num_sims))
-        weight_list = []
+        sim_results = []
 
-        for i in range(num_sims):
+        for _ in range(num_sims):
             w = np.random.random(len(prices.columns))
             w /= w.sum()
-            weight_list.append(w)
 
-            ret = np.dot(w, mean_returns)
-            vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
-            sharpe = ret / vol
+            port_return = np.dot(w, mean_returns)
+            port_vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
+            sharpe = port_return / port_vol if port_vol != 0 else 0
 
-            results[:, i] = [ret, vol, sharpe]
+            sim_results.append([port_return, port_vol, sharpe])
 
-        idx = results[2].argmax()
+        sim_out_df = pd.DataFrame(sim_results, columns=["Portfolio_Return", "Volatility", "Sharpe_Ratio"])
 
-        fig, ax = plt.subplots()
-        ax.scatter(results[1], results[0], c=results[2], cmap="viridis", s=5)
-        ax.scatter(results[1, idx], results[0, idx], color="red", s=200, marker="*")
-        ax.set_xlabel("Volatility")
-        ax.set_ylabel("Return")
-        st.pyplot(fig)
+        fig = px.scatter(
+            sim_out_df,
+            x='Volatility',
+            y='Portfolio_Return',
+            color='Sharpe_Ratio',
+            size='Sharpe_Ratio',
+            hover_data=['Sharpe_Ratio']
+        )
 
-        best_df = pd.DataFrame({
-            "Asset": prices.columns,
-            "Weight": weight_list[idx]
-        })
-
-        st.markdown("**Best Sharpe Ratio Portfolio Weights**")
-        st.dataframe(best_df)
+        fig.update_layout({'plot_bgcolor': "white"})
+        st.plotly_chart(fig, use_container_width=True)
 
 else:
     st.info("👈 Select assets and click Run Analysis")
