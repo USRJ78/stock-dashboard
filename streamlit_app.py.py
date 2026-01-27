@@ -40,14 +40,17 @@ def resolve_assets(user_inputs):
     for item in user_inputs:
         key = item.upper().strip()
 
+        # If user already typed a ticker like RELIANCE.NS
         if "." in key:
             resolved[item] = key
             continue
 
+        # ETF name mapping
         if key in ETF_MAP:
             resolved[item] = ETF_MAP[key]
             continue
 
+        # Fuzzy match company name -> ticker
         matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
         if matches:
             resolved[item] = stock_map[matches[0]]
@@ -58,6 +61,7 @@ def resolve_assets(user_inputs):
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
+    # stable cache key
     tickers = sorted(list(set(tickers)))
     data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
     if isinstance(data, pd.Series):
@@ -70,6 +74,7 @@ def load_prices(tickers, start, end):
 
 st.sidebar.header("Inputs")
 
+# ---- HYBRID SEARCH ----
 @st.cache_data(ttl=3600)
 def load_search_options():
     stock_map = load_nse_stock_list()
@@ -129,13 +134,13 @@ if run:
     st.subheader("Resolved Assets")
     st.write(valid)
 
+    # SAME selected assets used for ALL graphs
     prices = load_prices(list(valid.values()), start_date, end_date)
 
     if prices.empty:
         st.error("❌ No price data fetched")
         st.stop()
 
-    # SAME DATA SOURCE FOR EVERYTHING
     returns = prices.pct_change().dropna()
 
     # -------- Random Allocation --------
@@ -188,24 +193,16 @@ if run:
     ax.set_ylabel("Portfolio Value (INR)")
     st.pyplot(fig)
 
-    # -------- Histogram (SAME RETURNS DATA) --------
+    # -------- Histogram (uses SAME selected assets, NO extra selectbox) --------
     st.subheader("📊 Daily % Change Distribution (Histogram)")
 
-    daily_returns_df = returns * 100
+    daily_returns_df = returns.copy() * 100
     daily_returns_df["Date"] = daily_returns_df.index
 
-    hist_assets = st.multiselect(
-        "Select assets for histogram",
-        options=[c for c in daily_returns_df.columns if c != "Date"],
-        default=[c for c in daily_returns_df.columns if c != "Date"][:1]
-    )
-
-    if hist_assets:
-        fig = px.histogram(
-            daily_returns_df[["Date"] + hist_assets].drop(columns=["Date"])
-        )
-        fig.update_layout({'plot_bgcolor': "white"})
-        st.plotly_chart(fig, use_container_width=True)
+    # Uses the SAME data (the assets selected in the search bar)
+    fig = px.histogram(daily_returns_df.drop(columns=["Date"]))
+    fig.update_layout({'plot_bgcolor': "white"})
+    st.plotly_chart(fig, use_container_width=True)
 
     # -------- Monte Carlo --------
     if run_mc:
