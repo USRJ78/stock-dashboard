@@ -58,7 +58,6 @@ def resolve_assets(user_inputs):
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
-    # Stable cache key + safer caching behavior
     tickers = sorted(list(set(tickers)))
     data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
     if isinstance(data, pd.Series):
@@ -71,7 +70,6 @@ def load_prices(tickers, start, end):
 
 st.sidebar.header("Inputs")
 
-# ---- HYBRID SEARCH ----
 @st.cache_data(ttl=3600)
 def load_search_options():
     stock_map = load_nse_stock_list()
@@ -137,6 +135,7 @@ if run:
         st.error("❌ No price data fetched")
         st.stop()
 
+    # SAME DATA SOURCE FOR EVERYTHING
     returns = prices.pct_change().dropna()
 
     # -------- Random Allocation --------
@@ -189,10 +188,10 @@ if run:
     ax.set_ylabel("Portfolio Value (INR)")
     st.pyplot(fig)
 
-    # -------- Histogram (Plotly) --------
+    # -------- Histogram (SAME RETURNS DATA) --------
     st.subheader("📊 Daily % Change Distribution (Histogram)")
 
-    daily_returns_df = returns.copy() * 100
+    daily_returns_df = returns * 100
     daily_returns_df["Date"] = daily_returns_df.index
 
     hist_assets = st.multiselect(
@@ -202,14 +201,11 @@ if run:
     )
 
     if hist_assets:
-        # matches your style: px.histogram(daily_returns_df.drop(columns=['Date']))
         fig = px.histogram(
             daily_returns_df[["Date"] + hist_assets].drop(columns=["Date"])
         )
         fig.update_layout({'plot_bgcolor': "white"})
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Select at least one asset to show the histogram.")
 
     # -------- Monte Carlo --------
     if run_mc:
