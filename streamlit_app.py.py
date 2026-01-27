@@ -68,7 +68,6 @@ def load_prices(tickers, start, end):
 
 # -------- Your Plotly Function (Streamlit compatible) --------
 def plot_financial_data(df, title):
-
     fig = px.line(title=title)
 
     for i in df.columns[1:]:
@@ -76,7 +75,6 @@ def plot_financial_data(df, title):
 
     fig.update_traces(line_width=3)
     fig.update_layout({'plot_bgcolor': "white"})
-
     st.plotly_chart(fig, use_container_width=True)
 
 # -------- Your Scaling Function --------
@@ -171,37 +169,33 @@ if run:
     st.subheader("💰 Portfolio Allocation")
     st.dataframe(alloc_df)
 
-    # -------- Portfolio Positions DF (used for scaling graph) --------
-    portfolio_positions = (prices / prices.iloc[0]) * allocation  # INR value per asset over time
-    portfolio_value = portfolio_positions.sum(axis=1)
-
-    # Portfolio daily return (%)
-    portfolio_daily_return = portfolio_value.pct_change().dropna() * 100
-
-    portfolio_df = portfolio_positions.copy()
-    portfolio_df["Portfolio Value [$]"] = portfolio_value
-    # align index for daily return (first day is NaN)
-    portfolio_df["Portfolio Daily Return [%]"] = portfolio_value.pct_change() * 100
-    portfolio_df["Date"] = portfolio_df.index
-
-    # move Date to first column
-    portfolio_df = portfolio_df[["Date"] + [c for c in portfolio_df.columns if c != "Date"]]
-
-    # -------- Percentage Change Graph (YOUR requested method) --------
+    # -------- Percentage Change Graph (Scaled Prices) --------
     st.subheader("📊 Percentage Change (Scaled Prices)")
     scaled_prices_df = prices.copy()
     scaled_prices_df["Date"] = scaled_prices_df.index
     scaled_prices_df = scaled_prices_df[["Date"] + [c for c in scaled_prices_df.columns if c != "Date"]]
-
     scaled_prices_df = price_scaling(scaled_prices_df)
     plot_financial_data(scaled_prices_df, "Scaled Price Change (Base = 1.0)")
 
-    # -------- Price Levels --------
-    st.subheader("📈 Price Movement")
-    fig, ax = plt.subplots()
-    prices.plot(ax=ax)
-    ax.set_ylabel("Price")
-    st.pyplot(fig)
+    # -------- Price Movement Graph (SAME Plotly style) --------
+    st.subheader("📈 Price Movement (Actual Prices)")
+
+    raw_prices_df = prices.copy()
+    raw_prices_df["Date"] = raw_prices_df.index
+    raw_prices_df = raw_prices_df[["Date"] + [c for c in raw_prices_df.columns if c != "Date"]]
+
+    # Similar to your approach: use plot_financial_data for raw prices
+    plot_financial_data(raw_prices_df, "Price Movement (Actual Prices)")
+
+    # -------- Portfolio Positions DF --------
+    portfolio_positions = (prices / prices.iloc[0]) * allocation  # INR value per asset over time
+    portfolio_value = portfolio_positions.sum(axis=1)
+
+    portfolio_df = portfolio_positions.copy()
+    portfolio_df["Portfolio Value [$]"] = portfolio_value
+    portfolio_df["Portfolio Daily Return [%]"] = portfolio_value.pct_change() * 100
+    portfolio_df["Date"] = portfolio_df.index
+    portfolio_df = portfolio_df[["Date"] + [c for c in portfolio_df.columns if c != "Date"]]
 
     # -------- Portfolio Positions (YOUR requested call) --------
     st.subheader("💼 Portfolio Positions (INR)")
