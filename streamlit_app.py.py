@@ -71,7 +71,6 @@ def plot_financial_data(df, title):
 
     fig = px.line(title=title)
 
-    # Skip Date column
     for i in df.columns[1:]:
         fig.add_scatter(x=df['Date'], y=df[i], name=i)
 
@@ -79,6 +78,13 @@ def plot_financial_data(df, title):
     fig.update_layout({'plot_bgcolor': "white"})
 
     st.plotly_chart(fig, use_container_width=True)
+
+# -------- Your Scaling Function --------
+def price_scaling(raw_prices_df):
+    scaled_prices_df = raw_prices_df.copy()
+    for i in raw_prices_df.columns[1:]:
+        scaled_prices_df[i] = raw_prices_df[i] / raw_prices_df[i].iloc[0]
+    return scaled_prices_df
 
 # ------------------ Sidebar ------------------
 
@@ -151,11 +157,11 @@ if run:
 
     returns = prices.pct_change().dropna()
 
-    # -------- Allocation --------
+    # -------- Random Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
-
     allocation = initial_amount * weights
+
     alloc_df = pd.DataFrame({
         "Asset": prices.columns,
         "Weight": weights,
@@ -165,13 +171,30 @@ if run:
     st.subheader("💰 Portfolio Allocation")
     st.dataframe(alloc_df)
 
-    # -------- Percentage Change --------
-    st.subheader("📊 Percentage Change (%)")
-    pct_change = (prices / prices.iloc[0] - 1) * 100
-    fig, ax = plt.subplots()
-    pct_change.plot(ax=ax)
-    ax.set_ylabel("% Change")
-    st.pyplot(fig)
+    # -------- Portfolio Positions DF (used for scaling graph) --------
+    portfolio_positions = (prices / prices.iloc[0]) * allocation  # INR value per asset over time
+    portfolio_value = portfolio_positions.sum(axis=1)
+
+    # Portfolio daily return (%)
+    portfolio_daily_return = portfolio_value.pct_change().dropna() * 100
+
+    portfolio_df = portfolio_positions.copy()
+    portfolio_df["Portfolio Value [$]"] = portfolio_value
+    # align index for daily return (first day is NaN)
+    portfolio_df["Portfolio Daily Return [%]"] = portfolio_value.pct_change() * 100
+    portfolio_df["Date"] = portfolio_df.index
+
+    # move Date to first column
+    portfolio_df = portfolio_df[["Date"] + [c for c in portfolio_df.columns if c != "Date"]]
+
+    # -------- Percentage Change Graph (YOUR requested method) --------
+    st.subheader("📊 Percentage Change (Scaled Prices)")
+    scaled_prices_df = prices.copy()
+    scaled_prices_df["Date"] = scaled_prices_df.index
+    scaled_prices_df = scaled_prices_df[["Date"] + [c for c in scaled_prices_df.columns if c != "Date"]]
+
+    scaled_prices_df = price_scaling(scaled_prices_df)
+    plot_financial_data(scaled_prices_df, "Scaled Price Change (Base = 1.0)")
 
     # -------- Price Levels --------
     st.subheader("📈 Price Movement")
@@ -180,15 +203,18 @@ if run:
     ax.set_ylabel("Price")
     st.pyplot(fig)
 
+    # -------- Portfolio Positions (YOUR requested call) --------
+    st.subheader("💼 Portfolio Positions (INR)")
+    plot_financial_data(
+        portfolio_df.drop(['Portfolio Value [$]', 'Portfolio Daily Return [%]'], axis=1),
+        'Portfolio positions [$]'
+    )
+
     # -------- Daily Returns (Your Plot) --------
     st.subheader("📉 Daily Returns (%)")
-
     daily_returns_df = returns * 100
     daily_returns_df["Date"] = daily_returns_df.index
-
-    # reorder columns -> Date first
     daily_returns_df = daily_returns_df[["Date"] + [c for c in daily_returns_df.columns if c != "Date"]]
-
     plot_financial_data(daily_returns_df, 'Percentage Daily Returns [%]')
 
     # -------- Correlation Heatmap --------
@@ -203,9 +229,7 @@ if run:
     fig.colorbar(im, ax=ax)
     st.pyplot(fig)
 
-    # -------- Portfolio Value --------
-    portfolio_value = (prices / prices.iloc[0]) @ allocation
-
+    # -------- Portfolio Value Over Time --------
     st.subheader("💼 Portfolio Value Over Time")
     fig, ax = plt.subplots()
     ax.plot(portfolio_value)
@@ -214,7 +238,6 @@ if run:
 
     # -------- Histogram (same selected assets) --------
     st.subheader("📊 Daily % Change Distribution (Histogram)")
-
     fig = px.histogram(daily_returns_df.drop(columns=["Date"]))
     fig.update_layout({'plot_bgcolor': "white"})
     st.plotly_chart(fig, use_container_width=True)
