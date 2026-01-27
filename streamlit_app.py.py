@@ -1,19 +1,18 @@
-# (Updated code without rapidfuzz)
-# Uses difflib instead of rapidfuzz to avoid extra dependencies
+# Universal Market App (Extended – additive only)
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import requests
+import scipy.stats as stats
 from difflib import get_close_matches
 from datetime import date
 
 st.set_page_config(page_title="Universal Market App", layout="wide")
 
-st.title("📊 Universal Stock & ETF Portfolio App")
-st.markdown("Search by **name or ticker**, allocate capital, and run portfolio simulations.")
+st.title("📊 Universal Stock, ETF & Portfolio App")
+st.markdown("Search by **name or ticker**, allocate capital, analyze risk, and simulate portfolios.")
 
 # ------------------ Helpers ------------------
 
@@ -48,51 +47,58 @@ def resolve_assets(user_inputs):
             continue
 
         matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
-        if matches:
-            resolved[item] = stock_map[matches[0]]
-        else:
-            resolved[item] = None
+        resolved[item] = stock_map[matches[0]] if matches else None
 
     return resolved
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
-    data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
+    data = yf.download(
+        tickers,
+        start=start,
+        end=end,
+        auto_adjust=True,
+        progress=False,
+        group_by="ticker"
+    )
+
+    if isinstance(data, pd.DataFrame) and "Close" in data:
+        data = data["Close"]
+
     if isinstance(data, pd.Series):
         data = data.to_frame()
+
     return data.dropna()
 
 # ------------------ Sidebar ------------------
 
 st.sidebar.header("Inputs")
 
-# ---- HYBRID SEARCH ----
 @st.cache_data(ttl=3600)
 def load_search_options():
     stock_map = load_nse_stock_list()
-    etfs = list(ETF_MAP.keys())
-    stocks = list(stock_map.keys())
-    return sorted(stocks + etfs)
-
-search_options = load_search_options()
+    return sorted(list(stock_map.keys()) + list(ETF_MAP.keys()))
 
 selected_assets = st.sidebar.multiselect(
-    "🔍 Search & select stocks / ETFs (recommended)",
-    options=search_options
+    "🔍 Search & select stocks / ETFs",
+    load_search_options()
 )
 
 manual_assets = st.sidebar.text_input(
-    "✍️ Or manually type names / tickers (comma separated)",
-    ""
+    "✍️ Or manually type names / tickers (comma separated)"
 )
 
-initial_amount = st.sidebar.number_input("Initial Investment (INR)", value=100000, step=10000)
+initial_amount = st.sidebar.number_input(
+    "Initial Investment (INR)", value=100000, step=10000
+)
 
 start_date = st.sidebar.date_input("Start Date", date(2021, 1, 1))
 end_date = st.sidebar.date_input("End Date", date.today())
 
 run_mc = st.sidebar.checkbox("Run Monte Carlo Simulation")
-num_sims = st.sidebar.number_input("No. of simulations", 1000, 20000, 5000, step=1000)
+num_sims = st.sidebar.number_input(
+    "Monte Carlo simulations", 1000, 20000, 5000, step=1000
+)
 
 run = st.sidebar.button("Run Analysis")
 
@@ -100,31 +106,20 @@ run = st.sidebar.button("Run Analysis")
 
 if run:
     user_assets = []
-
-    if selected_assets:
-        user_assets.extend(selected_assets)
-
-    if manual_assets.strip():
-        user_assets.extend([x.strip() for x in manual_assets.split(",") if x.strip()])
+    user_assets += selected_assets
+    if manual_assets:
+        user_assets += [x.strip() for x in manual_assets.split(",") if x.strip()]
 
     if not user_assets:
-        st.error("❌ Please select or enter at least one asset")
+        st.error("❌ No assets selected")
         st.stop()
 
     resolved = resolve_assets(user_assets)
-
     valid = {k: v for k, v in resolved.items() if v}
-    invalid = [k for k, v in resolved.items() if not v]
-
-    if invalid:
-        st.warning(f"⚠️ Could not resolve: {', '.join(invalid)}")
 
     if not valid:
         st.error("❌ No valid assets resolved")
         st.stop()
-
-    st.subheader("Resolved Assets")
-    st.write(valid)
 
     prices = load_prices(list(valid.values()), start_date, end_date)
 
@@ -134,11 +129,12 @@ if run:
 
     returns = prices.pct_change().dropna()
 
-    # -------- Random Allocation --------
+    # -------- Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
 
     allocation = initial_amount * weights
+
     alloc_df = pd.DataFrame({
         "Asset": prices.columns,
         "Weight": weights,
@@ -148,47 +144,61 @@ if run:
     st.subheader("💰 Portfolio Allocation")
     st.dataframe(alloc_df)
 
+    # -------- Price Movement --------
+    st.subheader("📈 Price Movement")
+    st.line_chart(prices)
+
     # -------- Percentage Change --------
     st.subheader("📊 Percentage Change (%)")
     pct_change = (prices / prices.iloc[0] - 1) * 100
-    fig, ax = plt.subplots()
-    pct_change.plot(ax=ax)
-    ax.set_ylabel("% Change")
-    st.pyplot(fig)
-
-    # -------- Price Levels --------
-    st.subheader("📈 Price Movement")
-    fig, ax = plt.subplots()
-    prices.plot(ax=ax)
-    ax.set_ylabel("Price")
-    st.pyplot(fig)
+    st.line_chart(pct_change)
 
     # -------- Correlation Heatmap --------
     st.subheader("🔥 Correlation Heatmap")
     corr = returns.corr()
     fig, ax = plt.subplots()
     im = ax.imshow(corr, cmap="coolwarm")
-    ax.set_xticks(range(len(corr.columns)))
-    ax.set_yticks(range(len(corr.columns)))
+    ax.set_xticks(range(len(corr)))
+    ax.set_yticks(range(len(corr)))
     ax.set_xticklabels(corr.columns, rotation=45, ha="right")
     ax.set_yticklabels(corr.columns)
-    fig.colorbar(im, ax=ax)
+    fig.colorbar(im)
     st.pyplot(fig)
 
     # -------- Portfolio Value --------
     portfolio_value = (prices / prices.iloc[0]) @ allocation
-
     st.subheader("💼 Portfolio Value Over Time")
+    st.line_chart(portfolio_value)
+
+    # -------- Daily Returns Distribution --------
+    st.subheader("📉 Daily Returns Distribution")
+    port_returns = returns @ weights
+
     fig, ax = plt.subplots()
-    ax.plot(portfolio_value)
-    ax.set_ylabel("Portfolio Value (INR)")
+    ax.hist(port_returns, bins=40, density=True, alpha=0.6)
+    mu, std = port_returns.mean(), port_returns.std()
+    x = np.linspace(mu - 4*std, mu + 4*std, 200)
+    ax.plot(x, stats.norm.pdf(x, mu, std))
+    ax.set_title("Normal Distribution of Daily Returns")
     st.pyplot(fig)
+
+    # -------- Risk Metrics --------
+    st.subheader("⚠️ Risk Metrics")
+    vol = port_returns.std() * np.sqrt(252)
+    sharpe = (port_returns.mean() * 252) / vol
+    max_dd = (portfolio_value / portfolio_value.cummax() - 1).min()
+
+    st.write({
+        "Annualized Volatility": f"{vol:.2%}",
+        "Sharpe Ratio": f"{sharpe:.2f}",
+        "Max Drawdown": f"{max_dd:.2%}"
+    })
 
     # -------- Monte Carlo --------
     if run_mc:
-        st.subheader("🎯 Monte Carlo Simulation")
+        st.subheader("🎯 Monte Carlo Efficient Frontier")
 
-        mean_returns = returns.mean() * 252
+        mean_ret = returns.mean() * 252
         cov = returns.cov() * 252
 
         results = np.zeros((3, num_sims))
@@ -199,28 +209,25 @@ if run:
             w /= w.sum()
             weight_list.append(w)
 
-            ret = np.dot(w, mean_returns)
-            vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
-            sharpe = ret / vol
-
-            results[:, i] = [ret, vol, sharpe]
+            r = np.dot(w, mean_ret)
+            v = np.sqrt(np.dot(w.T, np.dot(cov, w)))
+            s = r / v
+            results[:, i] = [r, v, s]
 
         idx = results[2].argmax()
 
         fig, ax = plt.subplots()
         ax.scatter(results[1], results[0], c=results[2], cmap="viridis", s=5)
-        ax.scatter(results[1, idx], results[0, idx], color="red", s=200, marker="*")
+        ax.scatter(results[1, idx], results[0, idx], color="red", marker="*", s=250)
         ax.set_xlabel("Volatility")
         ax.set_ylabel("Return")
         st.pyplot(fig)
 
-        best_df = pd.DataFrame({
+        st.markdown("**Best Sharpe Portfolio Weights**")
+        st.dataframe(pd.DataFrame({
             "Asset": prices.columns,
             "Weight": weight_list[idx]
-        })
-
-        st.markdown("**Best Sharpe Ratio Portfolio Weights**")
-        st.dataframe(best_df)
+        }))
 
 else:
     st.info("👈 Select assets and click Run Analysis")
