@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import requests
+import plotly.express as px
 from difflib import get_close_matches
 from datetime import date
 
@@ -57,10 +58,14 @@ def resolve_assets(user_inputs):
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
+    # Stable cache key + safer caching behavior
+    tickers = sorted(list(set(tickers)))
     data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
     if isinstance(data, pd.Series):
         data = data.to_frame()
-    return data.dropna()
+    data = data.dropna()
+    data.index = pd.to_datetime(data.index)
+    return data
 
 # ------------------ Sidebar ------------------
 
@@ -183,6 +188,28 @@ if run:
     ax.plot(portfolio_value)
     ax.set_ylabel("Portfolio Value (INR)")
     st.pyplot(fig)
+
+    # -------- Histogram (Plotly) --------
+    st.subheader("📊 Daily % Change Distribution (Histogram)")
+
+    daily_returns_df = returns.copy() * 100
+    daily_returns_df["Date"] = daily_returns_df.index
+
+    hist_assets = st.multiselect(
+        "Select assets for histogram",
+        options=[c for c in daily_returns_df.columns if c != "Date"],
+        default=[c for c in daily_returns_df.columns if c != "Date"][:1]
+    )
+
+    if hist_assets:
+        # matches your style: px.histogram(daily_returns_df.drop(columns=['Date']))
+        fig = px.histogram(
+            daily_returns_df[["Date"] + hist_assets].drop(columns=["Date"])
+        )
+        fig.update_layout({'plot_bgcolor': "white"})
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Select at least one asset to show the histogram.")
 
     # -------- Monte Carlo --------
     if run_mc:
