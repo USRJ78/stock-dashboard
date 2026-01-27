@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
+import seaborn as sns
 from difflib import get_close_matches
 from datetime import date
 
@@ -158,7 +159,7 @@ if run:
         'Portfolio positions [$]'
     )
 
-    # -------- Portfolio Value Over Time (NEW) --------
+    # -------- Portfolio Value Over Time --------
     st.subheader("💼 Total Portfolio Value Over Time")
     plot_financial_data(
         portfolio_df[['Date', 'Portfolio Value [$]']],
@@ -171,6 +172,14 @@ if run:
     daily_returns_df["Date"] = daily_returns_df.index
     daily_returns_df = daily_returns_df[["Date"] + list(returns.columns)]
     plot_financial_data(daily_returns_df, 'Percentage Daily Returns [%]')
+
+    # -------- Correlation Heatmap (Seaborn) --------
+    st.subheader("🔥 Correlation Heatmap")
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(daily_returns_df.drop(columns=['Date']).corr(), annot=True)
+    st.pyplot(plt.gcf())
+    plt.close()
 
     # -------- Histogram --------
     st.subheader("📊 Daily % Change Distribution (Histogram)")
