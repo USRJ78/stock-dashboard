@@ -40,17 +40,14 @@ def resolve_assets(user_inputs):
     for item in user_inputs:
         key = item.upper().strip()
 
-        # If user already typed a ticker like RELIANCE.NS
         if "." in key:
             resolved[item] = key
             continue
 
-        # ETF name mapping
         if key in ETF_MAP:
             resolved[item] = ETF_MAP[key]
             continue
 
-        # Fuzzy match company name -> ticker
         matches = get_close_matches(key, stock_map.keys(), n=1, cutoff=0.6)
         if matches:
             resolved[item] = stock_map[matches[0]]
@@ -61,7 +58,6 @@ def resolve_assets(user_inputs):
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
-    # stable cache key
     tickers = sorted(list(set(tickers)))
     data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
     if isinstance(data, pd.Series):
@@ -70,11 +66,24 @@ def load_prices(tickers, start, end):
     data.index = pd.to_datetime(data.index)
     return data
 
+# -------- Your Plotly Function (Streamlit compatible) --------
+def plot_financial_data(df, title):
+
+    fig = px.line(title=title)
+
+    # Skip Date column
+    for i in df.columns[1:]:
+        fig.add_scatter(x=df['Date'], y=df[i], name=i)
+
+    fig.update_traces(line_width=3)
+    fig.update_layout({'plot_bgcolor': "white"})
+
+    st.plotly_chart(fig, use_container_width=True)
+
 # ------------------ Sidebar ------------------
 
 st.sidebar.header("Inputs")
 
-# ---- HYBRID SEARCH ----
 @st.cache_data(ttl=3600)
 def load_search_options():
     stock_map = load_nse_stock_list()
@@ -134,7 +143,6 @@ if run:
     st.subheader("Resolved Assets")
     st.write(valid)
 
-    # SAME selected assets used for ALL graphs
     prices = load_prices(list(valid.values()), start_date, end_date)
 
     if prices.empty:
@@ -143,7 +151,7 @@ if run:
 
     returns = prices.pct_change().dropna()
 
-    # -------- Random Allocation --------
+    # -------- Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
 
@@ -172,6 +180,17 @@ if run:
     ax.set_ylabel("Price")
     st.pyplot(fig)
 
+    # -------- Daily Returns (Your Plot) --------
+    st.subheader("📉 Daily Returns (%)")
+
+    daily_returns_df = returns * 100
+    daily_returns_df["Date"] = daily_returns_df.index
+
+    # reorder columns -> Date first
+    daily_returns_df = daily_returns_df[["Date"] + [c for c in daily_returns_df.columns if c != "Date"]]
+
+    plot_financial_data(daily_returns_df, 'Percentage Daily Returns [%]')
+
     # -------- Correlation Heatmap --------
     st.subheader("🔥 Correlation Heatmap")
     corr = returns.corr()
@@ -193,13 +212,9 @@ if run:
     ax.set_ylabel("Portfolio Value (INR)")
     st.pyplot(fig)
 
-    # -------- Histogram (uses SAME selected assets, NO extra selectbox) --------
+    # -------- Histogram (same selected assets) --------
     st.subheader("📊 Daily % Change Distribution (Histogram)")
 
-    daily_returns_df = returns.copy() * 100
-    daily_returns_df["Date"] = daily_returns_df.index
-
-    # Uses the SAME data (the assets selected in the search bar)
     fig = px.histogram(daily_returns_df.drop(columns=["Date"]))
     fig.update_layout({'plot_bgcolor': "white"})
     st.plotly_chart(fig, use_container_width=True)
