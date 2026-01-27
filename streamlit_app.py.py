@@ -111,8 +111,13 @@ if run:
         st.stop()
 
     prices = load_prices(list(valid.values()), start_date, end_date)
+    if prices.empty:
+        st.error("❌ No price data fetched")
+        st.stop()
+
     returns = prices.pct_change().dropna()
 
+    # -------- Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
     allocation = initial_amount * weights
@@ -175,7 +180,7 @@ if run:
     fig.update_layout({'plot_bgcolor': "white"})
     st.plotly_chart(fig, use_container_width=True)
 
-    # -------- Monte Carlo (Plotly version) --------
+    # -------- Monte Carlo (your exact plot + optimal point) --------
     if run_mc:
         st.subheader("🎯 Monte Carlo Simulation")
 
@@ -183,19 +188,30 @@ if run:
         cov = returns.cov() * 252
 
         sim_results = []
+        weight_list = []
 
         for _ in range(num_sims):
             w = np.random.random(len(prices.columns))
             w /= w.sum()
+            weight_list.append(w)
 
-            port_return = np.dot(w, mean_returns)
-            port_vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
-            sharpe = port_return / port_vol if port_vol != 0 else 0
+            port_return = float(np.dot(w, mean_returns))
+            port_vol = float(np.sqrt(np.dot(w.T, np.dot(cov, w))))
+            sharpe = (port_return / port_vol) if port_vol != 0 else np.nan
 
             sim_results.append([port_return, port_vol, sharpe])
 
         sim_out_df = pd.DataFrame(sim_results, columns=["Portfolio_Return", "Volatility", "Sharpe_Ratio"])
 
+        # Pick optimal point = max Sharpe (ignore NaNs)
+        sharpe_series = sim_out_df["Sharpe_Ratio"].replace([np.inf, -np.inf], np.nan)
+        optimal_idx = sharpe_series.idxmax()
+
+        optimal_portfolio_return = float(sim_out_df.loc[optimal_idx, "Portfolio_Return"])
+        optimal_volatility = float(sim_out_df.loc[optimal_idx, "Volatility"])
+        optimal_sharpe = float(sim_out_df.loc[optimal_idx, "Sharpe_Ratio"])
+
+        # Your requested plot
         fig = px.scatter(
             sim_out_df,
             x='Volatility',
@@ -205,8 +221,35 @@ if run:
             hover_data=['Sharpe_Ratio']
         )
 
+        fig.add_trace(
+            go.Scatter(
+                x=[optimal_volatility],
+                y=[optimal_portfolio_return],
+                mode='markers',
+                name='Optimal Point',
+                marker=dict(size=[40], color='red')
+            )
+        )
+
+        fig.update_layout(coloraxis_colorbar=dict(y=0.7, dtick=5))
         fig.update_layout({'plot_bgcolor': "white"})
+
+        # Streamlit-compatible output (instead of fig.show())
         st.plotly_chart(fig, use_container_width=True)
+
+        # Show best weights table (useful and matches the "optimal point")
+        st.subheader("✅ Optimal Portfolio Weights (Max Sharpe)")
+        best_df = pd.DataFrame({
+            "Asset": prices.columns,
+            "Weight": weight_list[int(optimal_idx)]
+        })
+        st.dataframe(best_df)
+
+        st.caption(
+            f"Optimal Sharpe = {optimal_sharpe:.4f} | "
+            f"Return (annualized) = {optimal_portfolio_return:.4f} | "
+            f"Volatility (annualized) = {optimal_volatility:.4f}"
+        )
 
 else:
     st.info("👈 Select assets and click Run Analysis")
