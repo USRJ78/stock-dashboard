@@ -1,7 +1,8 @@
 streamlit
+yfinance
 pandas
 numpy
-yfinance
 matplotlib
 seaborn
 scipy
+plotly
