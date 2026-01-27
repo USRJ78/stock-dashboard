@@ -17,6 +17,15 @@ st.set_page_config(page_title="Universal Market App", layout="wide")
 st.title("📊 Universal Stock & ETF Portfolio App")
 st.markdown("Search by **name or ticker**, allocate capital, and run portfolio simulations.")
 
+# ------------------ Run-state fix ------------------
+# This makes the app automatically re-run analysis whenever sidebar inputs change,
+# so graphs ALWAYS update with Start/End date changes (no stale charts).
+if "run_analysis" not in st.session_state:
+    st.session_state.run_analysis = False
+
+def trigger_run():
+    st.session_state.run_analysis = True
+
 # ------------------ Helpers ------------------
 
 @st.cache_data(ttl=3600)
@@ -50,6 +59,7 @@ def resolve_assets(user_inputs):
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
+    # caching is safe: when start/end change, cache key changes -> new data
     tickers = sorted(list(set(tickers)))
     data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
     if isinstance(data, pd.Series):
@@ -83,36 +93,94 @@ def load_search_options():
 
 search_options = load_search_options()
 
-selected_assets = st.sidebar.multiselect("🔍 Search & select stocks / ETFs (recommended)", options=search_options)
-manual_assets = st.sidebar.text_input("✍️ Or manually type names / tickers (comma separated)", "")
-initial_amount = st.sidebar.number_input("Initial Investment (INR)", value=100000, step=10000)
+selected_assets = st.sidebar.multiselect(
+    "🔍 Search & select stocks / ETFs (recommended)",
+    options=search_options,
+    key="selected_assets",
+    on_change=trigger_run
+)
 
-start_date = st.sidebar.date_input("Start Date", date(2021, 1, 1))
-end_date = st.sidebar.date_input("End Date", date.today())
+manual_assets = st.sidebar.text_input(
+    "✍️ Or manually type names / tickers (comma separated)",
+    "",
+    key="manual_assets",
+    on_change=trigger_run
+)
 
-run_mc = st.sidebar.checkbox("Run Monte Carlo Simulation")
-num_sims = st.sidebar.number_input("No. of simulations", 1000, 20000, 5000, step=1000)
+initial_amount = st.sidebar.number_input(
+    "Initial Investment (INR)",
+    value=100000,
+    step=10000,
+    key="initial_amount",
+    on_change=trigger_run
+)
 
-run = st.sidebar.button("Run Analysis")
+start_date = st.sidebar.date_input(
+    "Start Date",
+    date(2021, 1, 1),
+    key="start_date",
+    on_change=trigger_run
+)
+
+end_date = st.sidebar.date_input(
+    "End Date",
+    date.today(),
+    key="end_date",
+    on_change=trigger_run
+)
+
+run_mc = st.sidebar.checkbox(
+    "Run Monte Carlo Simulation",
+    key="run_mc",
+    on_change=trigger_run
+)
+
+num_sims = st.sidebar.number_input(
+    "No. of simulations",
+    1000,
+    20000,
+    5000,
+    step=1000,
+    key="num_sims",
+    on_change=trigger_run
+)
+
+# Still keep your button, but now date changes ALSO trigger run automatically
+if st.sidebar.button("Run Analysis", key="run_button"):
+    st.session_state.run_analysis = True
 
 # ------------------ Main ------------------
 
-if run:
+if st.session_state.run_analysis:
 
-    user_assets = selected_assets + [x.strip() for x in manual_assets.split(",") if x.strip()]
+    # basic date validation
+    if end_date <= start_date:
+        st.error("❌ End Date must be after Start Date")
+        st.stop()
+
+    user_assets = list(selected_assets) + [x.strip() for x in manual_assets.split(",") if x.strip()]
     if not user_assets:
         st.error("❌ Please select or enter at least one asset")
         st.stop()
 
     resolved = resolve_assets(user_assets)
+
     valid = {k: v for k, v in resolved.items() if v}
+    invalid = [k for k, v in resolved.items() if not v]
+
+    if invalid:
+        st.warning(f"⚠️ Could not resolve: {', '.join(invalid)}")
+
     if not valid:
         st.error("❌ No valid assets resolved")
         st.stop()
 
+    st.subheader("Resolved Assets")
+    st.write(valid)
+
     prices = load_prices(list(valid.values()), start_date, end_date)
     if prices.empty:
-        st.error("❌ No price data fetched")
+        st.error("❌ No price data fetched (try different dates / tickers)")
         st.stop()
 
     returns = prices.pct_change().dropna()
@@ -120,8 +188,18 @@ if run:
     # -------- Allocation --------
     weights = np.random.random(len(prices.columns))
     weights /= weights.sum()
-    allocation = initial_amount * weights
+    allocation = float(initial_amount) * weights
 
+    alloc_df = pd.DataFrame({
+        "Asset": prices.columns,
+        "Weight": weights,
+        "Allocation (INR)": allocation
+    })
+
+    st.subheader("💰 Portfolio Allocation")
+    st.dataframe(alloc_df)
+
+    # -------- Portfolio calcs --------
     portfolio_positions = (prices / prices.iloc[0]) * allocation
     portfolio_value = portfolio_positions.sum(axis=1)
 
@@ -131,7 +209,7 @@ if run:
     portfolio_df["Date"] = portfolio_df.index
     portfolio_df = portfolio_df[["Date"] + [c for c in portfolio_df.columns if c != "Date"]]
 
-    # -------- Scaled Price Change --------
+    # -------- Percentage Change (Scaled Prices) --------
     st.subheader("📊 Percentage Change (Scaled Prices)")
     scaled_prices_df = prices.copy()
     scaled_prices_df["Date"] = scaled_prices_df.index
@@ -139,7 +217,7 @@ if run:
     scaled_prices_df = price_scaling(scaled_prices_df)
     plot_financial_data(scaled_prices_df, "Scaled Price Change (Base = 1.0)")
 
-    # -------- Price Movement --------
+    # -------- Price Movement (Actual Prices) --------
     st.subheader("📈 Price Movement (Actual Prices)")
     raw_prices_df = prices.copy()
     raw_prices_df["Date"] = raw_prices_df.index
@@ -190,7 +268,7 @@ if run:
         sim_results = []
         weight_list = []
 
-        for _ in range(num_sims):
+        for _ in range(int(num_sims)):
             w = np.random.random(len(prices.columns))
             w /= w.sum()
             weight_list.append(w)
@@ -203,15 +281,12 @@ if run:
 
         sim_out_df = pd.DataFrame(sim_results, columns=["Portfolio_Return", "Volatility", "Sharpe_Ratio"])
 
-        # Pick optimal point = max Sharpe (ignore NaNs)
         sharpe_series = sim_out_df["Sharpe_Ratio"].replace([np.inf, -np.inf], np.nan)
         optimal_idx = sharpe_series.idxmax()
 
         optimal_portfolio_return = float(sim_out_df.loc[optimal_idx, "Portfolio_Return"])
         optimal_volatility = float(sim_out_df.loc[optimal_idx, "Volatility"])
-        optimal_sharpe = float(sim_out_df.loc[optimal_idx, "Sharpe_Ratio"])
 
-        # Your requested plot
         fig = px.scatter(
             sim_out_df,
             x='Volatility',
@@ -221,23 +296,18 @@ if run:
             hover_data=['Sharpe_Ratio']
         )
 
-        fig.add_trace(
-            go.Scatter(
-                x=[optimal_volatility],
-                y=[optimal_portfolio_return],
-                mode='markers',
-                name='Optimal Point',
-                marker=dict(size=[40], color='red')
-            )
-        )
+        fig.add_trace(go.Scatter(
+            x=[optimal_volatility],
+            y=[optimal_portfolio_return],
+            mode='markers',
+            name='Optimal Point',
+            marker=dict(size=[40], color='red')
+        ))
 
         fig.update_layout(coloraxis_colorbar=dict(y=0.7, dtick=5))
         fig.update_layout({'plot_bgcolor': "white"})
-
-        # Streamlit-compatible output (instead of fig.show())
         st.plotly_chart(fig, use_container_width=True)
 
-        # Show best weights table (useful and matches the "optimal point")
         st.subheader("✅ Optimal Portfolio Weights (Max Sharpe)")
         best_df = pd.DataFrame({
             "Asset": prices.columns,
@@ -245,11 +315,5 @@ if run:
         })
         st.dataframe(best_df)
 
-        st.caption(
-            f"Optimal Sharpe = {optimal_sharpe:.4f} | "
-            f"Return (annualized) = {optimal_portfolio_return:.4f} | "
-            f"Volatility (annualized) = {optimal_volatility:.4f}"
-        )
-
 else:
-    st.info("👈 Select assets and click Run Analysis")
+    st.info("👈 Select assets / change dates — graphs will auto-update. (You can also click Run Analysis.)")
