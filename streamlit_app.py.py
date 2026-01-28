@@ -11,15 +11,23 @@ import plotly.graph_objects as go
 import seaborn as sns
 from difflib import get_close_matches
 from datetime import date
+import requests
+import hashlib
 
 st.set_page_config(page_title="Universal Market App", layout="wide")
 
 st.title("📊 Universal Stock & ETF Portfolio App")
 st.markdown("Search by **name or ticker**, allocate capital, and run portfolio simulations.")
 
-# ------------------ Run-state fix ------------------
-# This makes the app automatically re-run analysis whenever sidebar inputs change,
-# so graphs ALWAYS update with Start/End date changes (no stale charts).
+# ============================
+# ✅ Premium AI Config
+# ============================
+API_URL = "http://localhost:8000"  # change to your deployed backend URL later
+
+def user_id_from_email(email: str) -> str:
+    return hashlib.md5(email.strip().lower().encode()).hexdigest()
+
+# ------------------ Run-state fix (graphs update with date changes) ------------------
 if "run_analysis" not in st.session_state:
     st.session_state.run_analysis = False
 
@@ -59,7 +67,6 @@ def resolve_assets(user_inputs):
 
 @st.cache_data(ttl=300)
 def load_prices(tickers, start, end):
-    # caching is safe: when start/end change, cache key changes -> new data
     tickers = sorted(list(set(tickers)))
     data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
     if isinstance(data, pd.Series):
@@ -145,15 +152,28 @@ num_sims = st.sidebar.number_input(
     on_change=trigger_run
 )
 
-# Still keep your button, but now date changes ALSO trigger run automatically
+# Keep your Run button
 if st.sidebar.button("Run Analysis", key="run_button"):
     st.session_state.run_analysis = True
+
+# ============================
+# 🔮 Premium AI Prediction (Sidebar)
+# ============================
+st.sidebar.markdown("---")
+st.sidebar.markdown("## 🔮 AI Prediction (Premium)")
+
+ai_enabled = st.sidebar.checkbox("Enable AI Prediction", key="ai_enabled", on_change=trigger_run)
+
+email = st.sidebar.text_input("Email (for premium access)", key="premium_email")
+
+horizon_map = {"1W": 5, "1M": 21, "3M": 63, "1Y": 252}
+horizon_label = st.sidebar.selectbox("Horizon", list(horizon_map.keys()), index=1, key="ai_horizon", on_change=trigger_run)
+horizon_days = horizon_map[horizon_label]
 
 # ------------------ Main ------------------
 
 if st.session_state.run_analysis:
 
-    # basic date validation
     if end_date <= start_date:
         st.error("❌ End Date must be after Start Date")
         st.stop()
@@ -178,7 +198,9 @@ if st.session_state.run_analysis:
     st.subheader("Resolved Assets")
     st.write(valid)
 
-    prices = load_prices(list(valid.values()), start_date, end_date)
+    tickers = list(valid.values())
+
+    prices = load_prices(tickers, start_date, end_date)
     if prices.empty:
         st.error("❌ No price data fetched (try different dates / tickers)")
         st.stop()
@@ -276,7 +298,6 @@ if st.session_state.run_analysis:
             port_return = float(np.dot(w, mean_returns))
             port_vol = float(np.sqrt(np.dot(w.T, np.dot(cov, w))))
             sharpe = (port_return / port_vol) if port_vol != 0 else np.nan
-
             sim_results.append([port_return, port_vol, sharpe])
 
         sim_out_df = pd.DataFrame(sim_results, columns=["Portfolio_Return", "Volatility", "Sharpe_Ratio"])
@@ -295,7 +316,6 @@ if st.session_state.run_analysis:
             size='Sharpe_Ratio',
             hover_data=['Sharpe_Ratio']
         )
-
         fig.add_trace(go.Scatter(
             x=[optimal_volatility],
             y=[optimal_portfolio_return],
@@ -303,7 +323,6 @@ if st.session_state.run_analysis:
             name='Optimal Point',
             marker=dict(size=[40], color='red')
         ))
-
         fig.update_layout(coloraxis_colorbar=dict(y=0.7, dtick=5))
         fig.update_layout({'plot_bgcolor': "white"})
         st.plotly_chart(fig, use_container_width=True)
@@ -314,6 +333,61 @@ if st.session_state.run_analysis:
             "Weight": weight_list[int(optimal_idx)]
         })
         st.dataframe(best_df)
+
+    # ============================
+    # 🔮 Premium AI Prediction Panel (Main)
+    # ============================
+    if ai_enabled:
+        st.markdown("---")
+        st.subheader("🔮 AI Return Prediction (Premium)")
+
+        if not email:
+            st.warning("Enter your email in the sidebar to use the Premium AI feature.")
+        else:
+            user_id = user_id_from_email(email)
+
+            # if multiple selected, let user choose; otherwise auto
+            chosen_ticker = tickers[0]
+            if len(tickers) > 1:
+                chosen_ticker = st.selectbox("Select asset for prediction", tickers, index=0)
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                if st.button("Unlock Premium (Pay)"):
+                    try:
+                        r = requests.post(
+                            f"{API_URL}/billing/create-checkout-session",
+                            json={"user_id": user_id, "email": email},
+                            timeout=20
+                        )
+                        if r.ok:
+                            st.link_button("Open Payment Link", r.json()["url"])
+                        else:
+                            st.error(r.text)
+                    except Exception as e:
+                        st.error(f"Payment error: {e}")
+
+            with c2:
+                if st.button("Run AI Prediction"):
+                    try:
+                        r = requests.post(
+                            f"{API_URL}/predict",
+                            json={"user_id": user_id, "ticker": chosen_ticker, "horizon_days": horizon_days},
+                            timeout=60
+                        )
+                        if r.ok:
+                            out = r.json()
+                            st.metric("Predicted Return", f"{out['predicted_return']*100:.2f}%")
+                            st.write(
+                                f"Confidence Range: {out['ci_low']*100:.2f}% to {out['ci_high']*100:.2f}% "
+                                f"(Horizon: {out['horizon_days']} trading days)"
+                            )
+                            st.caption("Educational use only. Not financial advice.")
+                        else:
+                            st.error(r.text)
+                    except Exception as e:
+                        st.error(f"Prediction error: {e}")
 
 else:
     st.info("👈 Select assets / change dates — graphs will auto-update. (You can also click Run Analysis.)")
