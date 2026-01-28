@@ -22,7 +22,7 @@ st.markdown("Search by **name or ticker**, allocate capital, and run portfolio s
 # ============================
 # ✅ Premium AI Config
 # ============================
-API_URL = "http://localhost:8000"  # change to your deployed backend URL later
+API_URL = "https://universal-market-app-1.onrender.com"  # change to your deployed backend URL later
 
 def user_id_from_email(email: str) -> str:
     return hashlib.md5(email.strip().lower().encode()).hexdigest()
@@ -391,3 +391,4 @@ if st.session_state.run_analysis:
 
 else:
     st.info("👈 Select assets / change dates — graphs will auto-update. (You can also click Run Analysis.)")
+
